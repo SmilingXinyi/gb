@@ -1,3 +1,9 @@
 go 1.24.0
 
-use ./log
+use (
+	./js
+	./jv
+	./log
+	./trace_id
+	./utils
+)
