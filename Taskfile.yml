@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: '3'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  tidy:
+    desc: Run go mod tidy for all modules
+    cmds:
+      - |
+        for dir in $(ls -d */ | grep -v "examples/"); do 
+          if [ -f "$dir/go.mod" ]; then 
+            echo "Tidying $dir..."
+            (cd "$dir" && go mod tidy)
+          fi
+        done
+
+  test:
+    desc: Run tests for all modules
+    cmds:
+      - |
+        for dir in $(ls -d */ | grep -v "examples/"); do 
+          if [ -f "$dir/go.mod" ]; then 
+            echo "Testing $dir..."
+            (cd "$dir" && go test ./...)
+          fi
+        done
