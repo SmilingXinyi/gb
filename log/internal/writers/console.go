@@ -10,7 +10,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// LevelColors 定义日志级别到颜色的映射
+// LevelColors defines the mapping from log levels to colors
 var LevelColors = map[zerolog.Level]*color.Color{
 	zerolog.TraceLevel: color.New(color.FgHiBlack),   // Gray
 	zerolog.DebugLevel: color.New(color.FgCyan),      // Cyan
@@ -26,37 +26,37 @@ var (
 	colorDim  = color.New(color.Faint)
 )
 
-// NewConsoleWriter 创建控制台输出
+// NewConsoleWriter creates a new console writer with formatted output
 func NewConsoleWriter() io.Writer {
 	return zerolog.ConsoleWriter{
 		Out:        os.Stderr,
 		TimeFormat: "15:04:05.000",
-		FormatLevel: func(i interface{}) string {
-			var l string
-			if ll, ok := i.(string); ok {
-				l = strings.ToUpper(ll)
+		FormatLevel: func(levelValue interface{}) string {
+			var levelStr string
+			if str, ok := levelValue.(string); ok {
+				levelStr = strings.ToUpper(str)
 			}
-			level, _ := zerolog.ParseLevel(strings.ToLower(l))
-			c, ok := LevelColors[level]
+			parsedLevel, _ := zerolog.ParseLevel(strings.ToLower(levelStr))
+			levelColor, ok := LevelColors[parsedLevel]
 			if !ok {
-				c = color.New(color.FgWhite)
+				levelColor = color.New(color.FgWhite)
 			}
-			return colorBold.Sprint(c.Sprintf("%-5s", l))
+			return colorBold.Sprint(levelColor.Sprintf("%-5s", levelStr))
 		},
-		FormatTimestamp: func(i interface{}) string {
-			return colorDim.Sprint(i)
+		FormatTimestamp: func(timestamp interface{}) string {
+			return colorDim.Sprint(timestamp)
 		},
-		FormatCaller: func(i interface{}) string {
-			return colorDim.Sprint(i)
+		FormatCaller: func(caller interface{}) string {
+			return colorDim.Sprint(caller)
 		},
-		FormatMessage: func(i interface{}) string {
-			return fmt.Sprintf("%v", i)
+		FormatMessage: func(message interface{}) string {
+			return fmt.Sprintf("%v", message)
 		},
-		FormatFieldName: func(i interface{}) string {
-			return colorDim.Sprintf("%s=", i)
+		FormatFieldName: func(fieldName interface{}) string {
+			return colorDim.Sprintf("%s=", fieldName)
 		},
-		FormatFieldValue: func(i interface{}) string {
-			return fmt.Sprintf("%v", i)
+		FormatFieldValue: func(fieldValue interface{}) string {
+			return fmt.Sprintf("%v", fieldValue)
 		},
 	}
 }

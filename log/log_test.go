@@ -34,12 +34,8 @@ func TestSetup(t *testing.T) {
 		config.Console.Level = "invalid"
 		Setup(config)
 		// Should fallback to InfoLevel if Console.Enabled is true but level is invalid
-		// Wait, looking at log.go:
-		// if l, err := zerolog.ParseLevel(config.Console.Level); err == nil { level = l }
-		// else { level = zerolog.TraceLevel } (if level was not set)
-		// Actually, level starts as InfoLevel. If Enabled is true, it defaults to TraceLevel if Level is "".
-		// If Level is "invalid", ParseLevel fails, so it stays InfoLevel or TraceLevel?
-		// Let's re-read log.go:
+		//
+		// According to log.go:
 		// level := zerolog.InfoLevel
 		// if config.Console.Enabled {
 		//    if config.Console.Level != "" {

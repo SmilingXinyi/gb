@@ -1,22 +1,22 @@
 # GB Log
 
-`gb/log` 是一个基于 [zerolog](https://github.com/rs/zerolog) 封装的高性能日志工具包。
+`gb/log` is a high-performance logging package based on [zerolog](https://github.com/rs/zerolog).
 
-## 特性
+## Features
 
-- **结构化日志**：原生支持 JSON 格式。
-- **控制台彩色输出**：在开发模式下提供易读的彩色日志。
-- **文件自动滚动**：集成 lumberjack，支持按大小、时间自动切割日志文件。
-- **调用链追踪**：自动简化调用者路径（相对于项目根目录）。
-- **极简 API**：提供全局快捷函数（`Info()`, `Error()` 等）。
+- **Structured Logging**: Native JSON support.
+- **Colorful Console Output**: Easy-to-read colored logs in development mode.
+- **Log Rotation**: Integrated with lumberjack for automatic log file rotation based on size and time.
+- **Caller Tracking**: Automatically simplifies caller paths (relative to the project root).
+- **Minimalist API**: Provides global shortcut functions (`Info()`, `Error()`, etc.).
 
-## 安装
+## Installation
 
 ```bash
 go get github.com/SmilingXinyi/gb/log@latest
 ```
 
-## 快速开始
+## Quick Start
 
 ```go
 package main
@@ -26,22 +26,22 @@ import (
 )
 
 func main() {
-	// 1. 初始化配置
+	// 1. Initialize configuration
 	config := log.DefaultConfig()
-	config.File.Filename = "app.log" // 设置文件名后将同时输出到文件
+	config.File.Filename = "app.log" // Output to both console and file
 	
-	// 2. 设置日志
+	// 2. Setup logging
 	log.Setup(config)
 
-	// 3. 使用日志
+	// 3. Use logging
 	log.Info().Str("module", "main").Msg("Hello GB Log!")
 	
-	// 4. 模块化日志
+	// 4. Modular logging
 	authLog := log.Module("auth")
 	authLog.Debug().Msg("User login attempt")
 }
 ```
 
-## 配置说明
+## Configuration
 
-详见 [config.go](./config.go) 中的 `LogConfig` 结构体定义。
+See the `LogConfig` struct definition in [config.go](./config.go) for details.

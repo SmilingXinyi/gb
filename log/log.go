@@ -15,83 +15,83 @@ import (
 var projectRoot string
 
 func init() {
-	wd, _ := os.Getwd()
-	projectRoot = findProjectRoot(wd)
+	workingDir, _ := os.Getwd()
+	projectRoot = findProjectRoot(workingDir)
 
-	// 设置全局 CallerMarshalFunc，使路径相对于项目根目录
-	zerolog.CallerMarshalFunc = func(pc uintptr, file string, line int) string {
-		if rel, err := filepath.Rel(projectRoot, file); err == nil {
-			// 如果路径包含 ..，说明在项目外部，则只显示文件名
-			if !filepath.IsAbs(rel) && !strings.HasPrefix(rel, "..") {
-				return rel + ":" + strconv.Itoa(line)
+	// Set global CallerMarshalFunc to make the path relative to the project root
+	zerolog.CallerMarshalFunc = func(pc uintptr, filePath string, lineNum int) string {
+		if relative, err := filepath.Rel(projectRoot, filePath); err == nil {
+			// If the path contains .., it means it's outside the project, so only show the base filename
+			if !filepath.IsAbs(relative) && !strings.HasPrefix(relative, "..") {
+				return relative + ":" + strconv.Itoa(lineNum)
 			}
 		}
-		return filepath.Base(file) + ":" + strconv.Itoa(line)
+		return filepath.Base(filePath) + ":" + strconv.Itoa(lineNum)
 	}
 }
 
 func findProjectRoot(startDir string) string {
-	dir := startDir
+	currentDir := startDir
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
+		if _, err := os.Stat(filepath.Join(currentDir, "go.mod")); err == nil {
+			return currentDir
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
+		parentDir := filepath.Dir(currentDir)
+		if parentDir == currentDir {
 			break
 		}
-		dir = parent
+		currentDir = parentDir
 	}
 	return startDir
 }
 
-// Event 是 zerolog.Event 的别名，方便外部使用
+// Event is an alias for zerolog.Event for easier external use
 type Event = zerolog.Event
 
-// Setup 使用配置初始化全局日志
+// Setup initializes the global logger with the provided configuration
 func Setup(config LogConfig) {
 	var writersList []io.Writer
 
-	// 1. 设置日志级别
-	level := zerolog.InfoLevel
+	// 1. Set log level
+	logLevel := zerolog.InfoLevel
 	if config.Console.Enabled {
 		if config.Console.Level != "" {
-			if l, err := zerolog.ParseLevel(config.Console.Level); err == nil {
-				level = l
+			if parsedLevel, err := zerolog.ParseLevel(config.Console.Level); err == nil {
+				logLevel = parsedLevel
 			}
 		} else {
-			level = zerolog.TraceLevel
+			logLevel = zerolog.TraceLevel
 		}
 		writersList = append(writersList, writers.NewConsoleWriter())
 	} else {
 		writersList = append(writersList, os.Stderr)
 	}
-	zerolog.SetGlobalLevel(level)
+	zerolog.SetGlobalLevel(logLevel)
 
-	// 2. 设置文件输出
-	fw := writers.NewFileWriter(writers.FileWriterConfig{
+	// 2. Set file output
+	fileWriter := writers.NewFileWriter(writers.FileWriterConfig{
 		Filename:   config.File.Filename,
 		MaxSize:    config.File.MaxSize,
 		MaxBackups: config.File.MaxBackups,
 		MaxAge:     config.File.MaxAge,
 		Compress:   config.File.Compress,
 	})
-	if fw != nil {
-		writersList = append(writersList, fw)
+	if fileWriter != nil {
+		writersList = append(writersList, fileWriter)
 	}
 
-	// 3. 合并输出
-	var multi io.Writer
+	// 3. Merge outputs
+	var multiWriter io.Writer
 	if len(writersList) == 1 {
-		multi = writersList[0]
+		multiWriter = writersList[0]
 	} else {
-		multi = zerolog.MultiLevelWriter(writersList...)
+		multiWriter = zerolog.MultiLevelWriter(writersList...)
 	}
 
-	log.Logger = zerolog.New(multi).With().Timestamp().Caller().Logger()
+	log.Logger = zerolog.New(multiWriter).With().Timestamp().Caller().Logger()
 }
 
-// Module 返回一个带有指定模块名称的 Logger
+// Module returns a Logger with the specified module name
 func Module(name string) zerolog.Logger {
 	return log.With().Str("module", name).Logger()
 }

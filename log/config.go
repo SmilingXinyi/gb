@@ -1,37 +1,37 @@
 package log
 
-// LogConfig 定义日志配置
+// LogConfig defines the configuration for logging
 type LogConfig struct {
-	// Console 控制台输出配置
+	// Console defines the configuration for console output
 	Console ConsoleConfig
-	// File 文件输出配置
+	// File defines the configuration for file output
 	File FileConfig
 }
 
-// ConsoleConfig 控制台输出配置
+// ConsoleConfig defines the configuration for console output
 type ConsoleConfig struct {
-	// Enabled 是否开启控制台输出
+	// Enabled indicates whether console output is enabled
 	Enabled bool
-	// Level 日志级别 (trace, debug, info, warn, error, fatal, panic)
-	// 如果为空，Enabled 为 true 时默认为 trace，为 false 时默认为 info
+	// Level defines the log level (trace, debug, info, warn, error, fatal, panic)
+	// If empty, it defaults to trace when Enabled is true, and info when false
 	Level string
 }
 
-// FileConfig 文件输出配置
+// FileConfig defines the configuration for file output
 type FileConfig struct {
-	// Filename 日志文件路径，如果为空则不输出到文件
+	// Filename is the path to the log file. If empty, file output is disabled
 	Filename string
-	// MaxSize 每个日志文件的最大大小（MB）
+	// MaxSize is the maximum size of each log file in megabytes
 	MaxSize int
-	// MaxBackups 保留的旧日志文件最大数量
+	// MaxBackups is the maximum number of old log files to retain
 	MaxBackups int
-	// MaxAge 保留的旧日志文件最大天数
+	// MaxAge is the maximum number of days to retain old log files
 	MaxAge int
-	// Compress 是否压缩旧日志文件
+	// Compress indicates whether old log files should be compressed
 	Compress bool
 }
 
-// DefaultConfig 返回默认配置
+// DefaultConfig returns the default logging configuration
 func DefaultConfig() LogConfig {
 	return LogConfig{
 		Console: ConsoleConfig{

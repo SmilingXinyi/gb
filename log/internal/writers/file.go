@@ -6,16 +6,21 @@ import (
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
-// FileWriterConfig 文件输出配置接口
+// FileWriterConfig defines the configuration for file logging
 type FileWriterConfig struct {
-	Filename   string
-	MaxSize    int
+	// Filename is the path to the log file
+	Filename string
+	// MaxSize is the maximum size of the log file in megabytes
+	MaxSize int
+	// MaxBackups is the maximum number of old log files to retain
 	MaxBackups int
-	MaxAge     int
-	Compress   bool
+	// MaxAge is the maximum number of days to retain old log files
+	MaxAge int
+	// Compress indicates whether old log files should be compressed
+	Compress bool
 }
 
-// NewFileWriter 创建文件输出
+// NewFileWriter creates a new file writer with rotation support
 func NewFileWriter(config FileWriterConfig) io.Writer {
 	if config.Filename == "" {
 		return nil

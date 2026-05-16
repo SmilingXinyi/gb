@@ -5,36 +5,36 @@ import (
 )
 
 func main() {
-	// 1. 获取默认配置并修改
+	// 1. Get default configuration and modify it
 	config := log.DefaultConfig()
-	config.File.Filename = "app.log" // 同时输出到控制台和 app.log
+	config.File.Filename = "app.log" // Output to both console and app.log
 	config.Console.Enabled = true
 	config.Console.Level = "trace"
 
-	// 2. 初始化
+	// 2. Initialize
 	log.Setup(config)
 
-	// 3. 演示所有常用日志级别
-	log.Trace().Msg("这是一条追踪日志 (Trace)")
-	log.Debug().Msg("这是一条调试日志 (Debug)")
-	log.Info().Msg("这是一条普通日志 (Info)")
-	log.Warn().Msg("这是一条警告日志 (Warn)")
-	log.Error().Msg("这是一条错误日志 (Error)")
+	// 3. Demonstrate all common log levels
+	log.Trace().Msg("This is a trace log")
+	log.Debug().Msg("This is a debug log")
+	log.Info().Msg("This is an info log")
+	log.Warn().Msg("This is a warn log")
+	log.Error().Msg("This is an error log")
 
-	// 4. 带有字段的日志
+	// 4. Log with fields
 	log.Info().
 		Str("version", "1.0.0").
 		Int("port", 8080).
-		Msg("项目启动详情")
+		Msg("Project startup details")
 
-	// 5. 模块化日志
+	// 5. Modular logging
 	authLogger := log.Module("auth")
-	authLogger.Info().Msg("用户认证模块已就绪")
+	authLogger.Info().Msg("User authentication module is ready")
 
-	// 6. 嵌套字典日志
+	// 6. Nested dictionary logging
 	log.Info().
 		Dict("database", log.Dict().
 			Str("host", "localhost").
 			Int("conns", 10),
-		).Msg("数据库连接池状态")
+		).Msg("Database connection pool status")
 }
