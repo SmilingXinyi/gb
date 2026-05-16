@@ -1,0 +1,32 @@
+{"level":"trace","time":"2026-05-15T00:50:39+08:00","caller":"log/examples/main.go:17","message":"这是一条追踪日志 (Trace)"}
+{"level":"debug","time":"2026-05-15T00:50:39+08:00","caller":"log/examples/main.go:18","message":"这是一条调试日志 (Debug)"}
+{"level":"info","time":"2026-05-15T00:50:39+08:00","caller":"log/examples/main.go:19","message":"这是一条普通日志 (Info)"}
+{"level":"warn","time":"2026-05-15T00:50:39+08:00","caller":"log/examples/main.go:20","message":"这是一条警告日志 (Warn)"}
+{"level":"error","time":"2026-05-15T00:50:39+08:00","caller":"log/examples/main.go:21","message":"这是一条错误日志 (Error)"}
+{"level":"info","version":"1.0.0","port":8080,"time":"2026-05-15T00:50:39+08:00","caller":"log/examples/main.go:27","message":"项目启动详情"}
+{"level":"info","module":"auth","time":"2026-05-15T00:50:39+08:00","caller":"log/examples/main.go:31","message":"用户认证模块已就绪"}
+{"level":"info","database":{"host":"localhost","conns":10},"time":"2026-05-15T00:50:39+08:00","caller":"log/examples/main.go:38","message":"数据库连接池状态"}
+{"level":"trace","time":"2026-05-15T00:58:48+08:00","caller":"log/examples/main.go:17","message":"这是一条追踪日志 (Trace)"}
+{"level":"debug","time":"2026-05-15T00:58:48+08:00","caller":"log/examples/main.go:18","message":"这是一条调试日志 (Debug)"}
+{"level":"info","time":"2026-05-15T00:58:48+08:00","caller":"log/examples/main.go:19","message":"这是一条普通日志 (Info)"}
+{"level":"warn","time":"2026-05-15T00:58:48+08:00","caller":"log/examples/main.go:20","message":"这是一条警告日志 (Warn)"}
+{"level":"error","time":"2026-05-15T00:58:48+08:00","caller":"log/examples/main.go:21","message":"这是一条错误日志 (Error)"}
+{"level":"info","version":"1.0.0","port":8080,"time":"2026-05-15T00:58:48+08:00","caller":"log/examples/main.go:27","message":"项目启动详情"}
+{"level":"info","module":"auth","time":"2026-05-15T00:58:48+08:00","caller":"log/examples/main.go:31","message":"用户认证模块已就绪"}
+{"level":"info","database":{"host":"localhost","conns":10},"time":"2026-05-15T00:58:48+08:00","caller":"log/examples/main.go:38","message":"数据库连接池状态"}
+{"level":"trace","time":"2026-05-15T01:42:45+08:00","caller":"log/examples/main.go:17","message":"这是一条追踪日志 (Trace)"}
+{"level":"debug","time":"2026-05-15T01:42:45+08:00","caller":"log/examples/main.go:18","message":"这是一条调试日志 (Debug)"}
+{"level":"info","time":"2026-05-15T01:42:45+08:00","caller":"log/examples/main.go:19","message":"这是一条普通日志 (Info)"}
+{"level":"warn","time":"2026-05-15T01:42:45+08:00","caller":"log/examples/main.go:20","message":"这是一条警告日志 (Warn)"}
+{"level":"error","time":"2026-05-15T01:42:45+08:00","caller":"log/examples/main.go:21","message":"这是一条错误日志 (Error)"}
+{"level":"info","version":"1.0.0","port":8080,"time":"2026-05-15T01:42:45+08:00","caller":"log/examples/main.go:27","message":"项目启动详情"}
+{"level":"info","module":"auth","time":"2026-05-15T01:42:45+08:00","caller":"log/examples/main.go:31","message":"用户认证模块已就绪"}
+{"level":"info","database":{"host":"localhost","conns":10},"time":"2026-05-15T01:42:45+08:00","caller":"log/examples/main.go:38","message":"数据库连接池状态"}
+{"level":"trace","time":"2026-05-16T16:03:30+08:00","caller":"log/examples/main.go:17","message":"这是一条追踪日志 (Trace)"}
+{"level":"debug","time":"2026-05-16T16:03:30+08:00","caller":"log/examples/main.go:18","message":"这是一条调试日志 (Debug)"}
+{"level":"info","time":"2026-05-16T16:03:30+08:00","caller":"log/examples/main.go:19","message":"这是一条普通日志 (Info)"}
+{"level":"warn","time":"2026-05-16T16:03:30+08:00","caller":"log/examples/main.go:20","message":"这是一条警告日志 (Warn)"}
+{"level":"error","time":"2026-05-16T16:03:30+08:00","caller":"log/examples/main.go:21","message":"这是一条错误日志 (Error)"}
+{"level":"info","version":"1.0.0","port":8080,"time":"2026-05-16T16:03:30+08:00","caller":"log/examples/main.go:27","message":"项目启动详情"}
+{"level":"info","module":"auth","time":"2026-05-16T16:03:30+08:00","caller":"log/examples/main.go:31","message":"用户认证模块已就绪"}
+{"level":"info","database":{"host":"localhost","conns":10},"time":"2026-05-16T16:03:30+08:00","caller":"log/examples/main.go:38","message":"数据库连接池状态"}
