@@ -1,62 +1,11 @@
+// Package llm provides goai-based large language model helpers.
+// It supports fluent session configuration, structured output via GenerateObject,
+// and streaming via StreamText. Under the hood, goai/provider/compat connects to
+// any OpenAI-compatible API without depending on go-openai.
 package llm
 
 import (
-	"context"
-	"fmt"
-
-	"github.com/SmilingXinyi/gb/llm/internal/openai"
-	"github.com/SmilingXinyi/gb/trace_id"
+	"github.com/SmilingXinyi/gb/log"
 )
 
-// Client provides chat and structured extraction against an OpenAI-compatible API.
-type Client struct {
-	config       LLMConfig
-	openaiClient *openai.Client
-}
-
-// NewClient creates a client from the given configuration.
-func NewClient(config LLMConfig) (*Client, error) {
-	openaiClient, err := openai.NewClient(openai.Config{
-		APIKey:  config.APIKey,
-		BaseURL: config.BaseURL,
-		Model:   config.Model,
-		Timeout: config.Timeout,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &Client{
-		config:       config,
-		openaiClient: openaiClient,
-	}, nil
-}
-
-// Chat sends messages to the model and returns the assistant reply text.
-func (client *Client) Chat(ctx context.Context, messages []Message) (string, error) {
-	if len(messages) == 0 {
-		return "", fmt.Errorf("at least one message is required")
-	}
-
-	traceIdentifier, err := trace_id.NewString()
-	if err != nil {
-		return "", fmt.Errorf("generate trace id: %w", err)
-	}
-
-	request := openai.ChatCompletionRequest{
-		Messages: toOpenAIMessages(messages),
-	}
-
-	return client.openaiClient.ChatCompletion(ctx, request, traceIdentifier)
-}
-
-func toOpenAIMessages(messages []Message) []openai.ChatMessage {
-	openaiMessages := make([]openai.ChatMessage, len(messages))
-	for index, message := range messages {
-		openaiMessages[index] = openai.ChatMessage{
-			Role:    string(message.Role),
-			Content: message.Content,
-		}
-	}
-	return openaiMessages
-}
+var moduleLogger = log.Module("llm")
