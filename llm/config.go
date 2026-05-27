@@ -11,8 +11,8 @@ const (
 	defaultTimeout = 120 * time.Second
 )
 
-// LLMConfig defines connection settings for an OpenAI-compatible chat API.
-type LLMConfig struct {
+// Config defines connection settings for an OpenAI-compatible chat API.
+type Config struct {
 	// APIKey is the bearer token used for authentication.
 	APIKey string
 	// BaseURL is the API root, for example https://api.openai.com/v1.
@@ -25,8 +25,8 @@ type LLMConfig struct {
 
 // DefaultConfig returns configuration populated from environment variables when present.
 // Supported variables: LLM_API_KEY, LLM_BASE_URL, LLM_MODEL.
-func DefaultConfig() LLMConfig {
-	config := LLMConfig{
+func DefaultConfig() Config {
+	config := Config{
 		BaseURL: defaultBaseURL,
 		Model:   defaultModel,
 		Timeout: defaultTimeout,
@@ -44,3 +44,6 @@ func DefaultConfig() LLMConfig {
 
 	return config
 }
+
+// LLMConfig is an alias for Config kept for backward compatibility.
+type LLMConfig = Config

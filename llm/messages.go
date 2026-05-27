@@ -1,6 +1,6 @@
 package llm
 
-// Role represents a chat message role in the OpenAI chat completions API.
+// Role is a strongly typed chat message role.
 type Role string
 
 const (
@@ -12,23 +12,10 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
-// Message is a single chat completion message.
+// Message is a business-layer message used to inject conversation history.
 type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
-}
-
-// SystemMessage builds a system role message.
-func SystemMessage(content string) Message {
-	return Message{Role: RoleSystem, Content: content}
-}
-
-// UserMessage builds a user role message.
-func UserMessage(content string) Message {
-	return Message{Role: RoleUser, Content: content}
-}
-
-// AssistantMessage builds an assistant role message.
-func AssistantMessage(content string) Message {
-	return Message{Role: RoleAssistant, Content: content}
+	// Name optionally distinguishes multiple participants with the same role.
+	Name string `json:"name,omitempty"`
 }
