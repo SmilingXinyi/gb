@@ -11,6 +11,7 @@ GB 是一个高质量、可复用的 Golang 基础库工具集合。它采用 **
 | [jv](./jv) | JSON Schema 校验器，支持内嵌与外部 Schema。 | ✅ 稳定 |
 | [trace_id](./trace_id) | 基于 UUID v7 的分布式追踪 ID 生成器。 | ✅ 稳定 |
 | [utils](./utils) | YAML 加载与 LLM 结构化 Schema 生成等通用工具。 | ✅ 稳定 |
+| [gsc](./gsc) | Google Search Console API：搜索分析、URL 检查、站点与 Sitemap 管理。 | ✅ 稳定 |
 
 ## 开发指南
 
