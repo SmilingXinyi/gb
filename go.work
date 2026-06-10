@@ -5,6 +5,7 @@ use (
 	./jv
 	./llm
 	./log
+	./oss
 	./trace_id
 	./utils
 )
