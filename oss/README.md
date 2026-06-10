@@ -14,11 +14,12 @@ oss/
 ├── client.go           # New() 工厂函数 + Register() 注册机制
 ├── baidu/              # 百度云 BOS 适配器（已实现）
 ├── aliyun/             # 阿里云 OSS 适配器（骨架）
-├── tencent/            # 腾讯云 COS 适配器（骨架）
+├── tencent/            # 腾讯云 COS 适配器（已实现）
 ├── s3/                 # AWS S3 / S3 兼容存储适配器（骨架）
 ├── examples/
 │   ├── basic/          # 基础用法示例
-│   └── baidu/          # 百度云可执行示例
+│   ├── baidu/          # 百度云可执行示例
+│   └── tencent/        # 腾讯云可执行示例
 ```
 
 ## 快速上手
@@ -116,7 +117,27 @@ go run ./oss/examples/baidu/
 
 ### 腾讯云 COS
 
-> 适配器尚未实现，测试命令待补充。
+**单元测试（无需凭证）**
+
+```bash
+go test ./oss/tencent/ -v -run "TestIsNotFound"
+```
+
+**集成测试**
+
+```bash
+# 1. 复制模板并填入真实凭证
+cp oss/tencent/.env.example oss/tencent/.env
+
+# 2. 运行全部集成测试
+go test ./oss/tencent/ -v -run "TestIntegration"
+```
+
+**示例程序**
+
+```bash
+go run ./oss/examples/tencent/
+```
 
 ---
 
@@ -129,7 +150,7 @@ go run ./oss/examples/baidu/
 > **注意**：各 provider 的 `.env` 文件需放置在其对应的适配器目录下：
 > - 百度云 BOS：`oss/baidu/.env`
 > - 阿里云 OSS：`oss/aliyun/.env`（待实现）
-> - 腾讯云 COS：`oss/tencent/.env`（待实现）
+> - 腾讯云 COS：`oss/tencent/.env`
 > - AWS S3：`oss/s3/.env`（待实现）
 >
 > 未配置 `.env` 时，集成测试自动 skip，单元测试正常运行。
@@ -156,3 +177,14 @@ Region 与 Endpoint 映射关系（留空默认 `bj`）：
 | `su` | `su.bcebos.com`（苏州） |
 | `hkg` | `hkg.bcebos.com`（香港） |
 | `fwh` | `fwh.bcebos.com`（武汉） |
+
+### 腾讯云 COS
+
+| Config 字段 | 说明 | 示例 |
+|---|---|---|
+| `AccessKey` | SecretId | `AKIDXXXXXXXXXX` |
+| `SecretKey` | SecretKey | `XXXXXXXXXX` |
+| `Region` | 地域 | `ap-guangzhou`、`ap-shanghai` |
+| `Endpoint` | 直接指定 BucketURL（格式 `https://{bucket}.cos.{region}.myqcloud.com`） | — |
+| `Bucket` | 默认 bucket（格式 `{name}-{appid}`） | `my-bucket-1250000000` |
+| `Token` | SessionToken（可选） | — |
