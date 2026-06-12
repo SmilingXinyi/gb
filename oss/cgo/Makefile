@@ -1,4 +1,3 @@
-MODULE  := icode.baidu.com/baidu/blockchain/voice-utils
 OUT_DIR := ../../output/oss_cgo
 LIB     := liboss
 

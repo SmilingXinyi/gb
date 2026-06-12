@@ -19,7 +19,7 @@ The project is managed locally with Go Workspaces (`go.work`).
 
 ### Local development (Go Workspaces)
 
-If you are working on another project (for example `voice-utils`) and need to change tools in `gb`, create a `go.work` file in their common parent directory:
+If you are working on another project and need to change tools in `gb`, create a `go.work` file in their common parent directory:
 
 ```bash
 go work init ./gb/log ./your-project
