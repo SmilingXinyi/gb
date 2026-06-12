@@ -1,3 +1,6 @@
 app.log
 
-.env
+# Environment files with secrets (keep examples)
+**/.env
+!.env.example
+!**/.env.example
