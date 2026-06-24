@@ -7,6 +7,7 @@ GB is a collection of high-quality, reusable Golang base libraries and utilities
 | Package | Description | Status |
 | :--- | :--- | :--- |
 | [log](./log) | High-performance structured logging built on zerolog, with colored console output and automatic log file rotation. | ✅ Stable |
+| [sseq](./sseq) | Seq-only span tree ingestion via CLEF (no console, no OTel). | 🆕 New |
 | [llm](./llm) | LLM wrapper built on [goai](https://github.com/zendev-sh/goai): fluent sessions, `Execute` / `ExecuteTo` / `Stream`. | ✅ Stable |
 | [jv](./jv) | JSON Schema validator with embedded and external schema support. | ✅ Stable |
 | [trace_id](./trace_id) | Distributed trace ID generator based on UUID v7. | ✅ Stable |
