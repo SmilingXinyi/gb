@@ -12,7 +12,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-var projectRoot string
+var (
+	projectRoot     string
+	activeSeqWriter io.Closer
+)
 
 func init() {
 	workingDir, _ := os.Getwd()
@@ -80,7 +83,24 @@ func Setup(config LogConfig) {
 		writersList = append(writersList, fileWriter)
 	}
 
-	// 3. Merge outputs
+	// 3. Set Seq output
+	activeSeqWriter = nil
+	if config.Seq.Enabled && config.Seq.Endpoint != "" {
+		seqWriter := writers.NewSeqWriter(writers.SeqWriterConfig{
+			Endpoint:      config.Seq.Endpoint,
+			APIKey:        config.Seq.APIKey,
+			Application:   config.Seq.Application,
+			BatchSize:     config.Seq.BatchSize,
+			FlushInterval: config.Seq.FlushInterval,
+		})
+		activeSeqWriter = seqWriter
+		writersList = append(writersList, &zerolog.FilteredLevelWriter{
+			Writer: zerolog.LevelWriterAdapter{Writer: seqWriter},
+			Level:  resolveSeqLevel(config.Seq.Level),
+		})
+	}
+
+	// 4. Merge outputs
 	var multiWriter io.Writer
 	if len(writersList) == 1 {
 		multiWriter = writersList[0]
@@ -89,6 +109,26 @@ func Setup(config LogConfig) {
 	}
 
 	log.Logger = zerolog.New(multiWriter).With().Timestamp().Caller().Logger()
+}
+
+// Shutdown flushes and closes optional asynchronous writers such as Seq.
+func Shutdown() {
+	if activeSeqWriter != nil {
+		_ = activeSeqWriter.Close()
+		activeSeqWriter = nil
+	}
+}
+
+// resolveSeqLevel parses the configured Seq level and falls back to info.
+func resolveSeqLevel(level string) zerolog.Level {
+	if level == "" {
+		return zerolog.InfoLevel
+	}
+	parsedLevel, err := zerolog.ParseLevel(level)
+	if err != nil {
+		return zerolog.InfoLevel
+	}
+	return parsedLevel
 }
 
 // Module returns a Logger with the specified module name

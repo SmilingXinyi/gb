@@ -1,11 +1,15 @@
 package log
 
+import "time"
+
 // LogConfig defines the configuration for logging
 type LogConfig struct {
 	// Console defines the configuration for console output
 	Console ConsoleConfig
 	// File defines the configuration for file output
 	File FileConfig
+	// Seq defines the configuration for Seq ingestion
+	Seq SeqConfig
 }
 
 // ConsoleConfig defines the configuration for console output
@@ -31,6 +35,24 @@ type FileConfig struct {
 	Compress bool
 }
 
+// SeqConfig defines the configuration for Seq CLEF ingestion.
+type SeqConfig struct {
+	// Enabled turns on Seq output when true.
+	Enabled bool
+	// Endpoint is the Seq CLEF ingestion URL, e.g. http://localhost:5342/ingest/clef.
+	Endpoint string
+	// APIKey is sent via the X-Seq-ApiKey header when non-empty.
+	APIKey string
+	// Level defines the minimum log level sent to Seq.
+	Level string
+	// Application is added to every Seq event as the Application property.
+	Application string
+	// BatchSize is the number of events to accumulate before flushing.
+	BatchSize int
+	// FlushInterval controls the maximum delay before buffered events are sent.
+	FlushInterval time.Duration
+}
+
 // DefaultConfig returns the default logging configuration
 func DefaultConfig() LogConfig {
 	return LogConfig{
@@ -43,6 +65,12 @@ func DefaultConfig() LogConfig {
 			MaxBackups: 5,
 			MaxAge:     30,
 			Compress:   true,
+		},
+		Seq: SeqConfig{
+			Enabled:       false,
+			Level:         "info",
+			BatchSize:     50,
+			FlushInterval: 2 * time.Second,
 		},
 	}
 }

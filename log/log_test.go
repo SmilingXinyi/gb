@@ -2,10 +2,15 @@ package log
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -60,6 +65,61 @@ func TestSetup(t *testing.T) {
 			t.Errorf("Log file %s was not created", tmpFile)
 		}
 	})
+
+	t.Run("SeqDisabledByDefault", func(t *testing.T) {
+		config := DefaultConfig()
+		if config.Seq.Enabled {
+			t.Fatalf("expected Seq to be disabled by default")
+		}
+	})
+
+	t.Run("SeqEnabled", func(t *testing.T) {
+		var requestBody string
+		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Errorf("read request body: %v", err)
+				response.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			requestBody = string(body)
+			response.WriteHeader(http.StatusCreated)
+		}))
+		defer server.Close()
+
+		config := DefaultConfig()
+		config.Console.Enabled = false
+		config.Seq.Enabled = true
+		config.Seq.Endpoint = server.URL
+		config.Seq.Application = "test-app"
+		config.Seq.BatchSize = 1
+		config.Seq.FlushInterval = time.Hour
+		Setup(config)
+		defer Shutdown()
+
+		Info().Str("user", "alice").Msg("login success")
+
+		deadline := time.Now().Add(2 * time.Second)
+		for requestBody == "" && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		if !strings.Contains(requestBody, `"@mt":"login success"`) {
+			t.Fatalf("seq payload missing message: %q", requestBody)
+		}
+		if !strings.Contains(requestBody, `"Application":"test-app"`) {
+			t.Fatalf("seq payload missing application: %q", requestBody)
+		}
+
+		var clefEvent map[string]any
+		firstLine := strings.Split(strings.TrimSpace(requestBody), "\n")[0]
+		if err := json.Unmarshal([]byte(firstLine), &clefEvent); err != nil {
+			t.Fatalf("decode clef payload: %v", err)
+		}
+		if clefEvent["user"] != "alice" {
+			t.Fatalf("user field = %v, want alice", clefEvent["user"])
+		}
+	})
 }
 
 func TestCallerMarshalFunc(t *testing.T) {
@@ -102,8 +162,13 @@ func TestLogLevels(t *testing.T) {
 	// Capture output to verify levels
 	var buf bytes.Buffer
 	oldLogger := log.Logger
-	defer func() { log.Logger = oldLogger }()
+	oldLevel := zerolog.GlobalLevel()
+	defer func() {
+		log.Logger = oldLogger
+		zerolog.SetGlobalLevel(oldLevel)
+	}()
 
+	zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	log.Logger = zerolog.New(&buf)
 
 	t.Run("Trace", func(t *testing.T) {
