@@ -6,6 +6,7 @@ use (
 	./llm
 	./log
 	./oss
+	./sseq
 	./trace_id
 	./utils
 )
