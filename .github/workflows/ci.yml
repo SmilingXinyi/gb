@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      SSEQ_SKIP_INTEGRATION: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            **/go.sum
+            go.work.sum
+
+      - name: Run module tests
+        run: |
+          set -euo pipefail
+          for module in gsc jv llm log oss sseq trace_id utils; do
+            echo "Testing ${module}..."
+            (cd "${module}" && go test ./...)
+          done
