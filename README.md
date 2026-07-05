@@ -13,6 +13,7 @@ GB is a collection of high-quality, reusable Golang base libraries and utilities
 | [trace_id](./trace_id) | Distributed trace ID generator based on UUID v7. | ✅ Stable |
 | [utils](./utils) | Shared utilities such as YAML loading and LLM structured schema generation. | ✅ Stable |
 | [gsc](./gsc) | Google Search Console API: search analytics, URL inspection, site and sitemap management. | ✅ Stable |
+| [oss](./oss) | Unified object storage abstraction for Baidu BOS, Tencent COS, and other providers. | ✅ Stable |
 
 ## Development
 
