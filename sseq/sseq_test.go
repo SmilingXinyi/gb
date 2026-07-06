@@ -35,7 +35,7 @@ func TestDoSpanHierarchy(t *testing.T) {
 		BatchSize:     1,
 		FlushInterval: time.Hour,
 	})
-	defer Shutdown()
+	t.Cleanup(Shutdown)
 
 	err := Do(context.Background(), "root", func(ctx context.Context) error {
 		return Do(ctx, "child-a", func(ctx context.Context) error {
@@ -48,16 +48,7 @@ func TestDoSpanHierarchy(t *testing.T) {
 		t.Fatalf("Do() error = %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		mutex.Lock()
-		bodyCount := len(receivedBodies)
-		mutex.Unlock()
-		if bodyCount >= 3 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	Shutdown()
 
 	mutex.Lock()
 	bodies := strings.Join(receivedBodies, "")
@@ -84,12 +75,12 @@ func TestStartEndTraceIDStable(t *testing.T) {
 		BatchSize:     1,
 		FlushInterval: time.Hour,
 	})
-	defer Shutdown()
+	t.Cleanup(Shutdown)
 
 	rootContext, rootSpan := Start(context.Background(), "root")
 	childContext, childSpan := Start(rootContext, "child")
-	defer childSpan.End()
-	defer rootSpan.End()
+	childSpan.End()
+	rootSpan.End()
 
 	if rootSpan.TraceID() == "" || childSpan.TraceID() == "" {
 		t.Fatalf("expected non-empty trace ids")

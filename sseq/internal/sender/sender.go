@@ -26,13 +26,15 @@ type Config struct {
 
 // Sender batches and posts CLEF span events to Seq.
 type Sender struct {
-	config     Config
-	httpClient *http.Client
-	buffer     bytes.Buffer
-	eventCount int
-	mutex      sync.Mutex
-	done       chan struct{}
-	closed     bool
+	config        Config
+	httpClient    *http.Client
+	buffer        bytes.Buffer
+	eventCount    int
+	mutex         sync.Mutex
+	done          chan struct{}
+	closed        bool
+	flushLoopWait sync.WaitGroup
+	postWait      sync.WaitGroup
 }
 
 // New creates an asynchronous Seq span sender.
@@ -54,6 +56,8 @@ func New(config Config) *Sender {
 		httpClient: httpClient,
 		done:       make(chan struct{}),
 	}
+
+	sender.flushLoopWait.Add(1)
 	go sender.runFlushLoop()
 	return sender
 }
@@ -82,7 +86,7 @@ func (sender *Sender) Send(event SpanEvent) error {
 	return nil
 }
 
-// Close flushes buffered events and stops the background flush loop.
+// Close flushes buffered events, stops the background flush loop, and waits for in-flight deliveries.
 func (sender *Sender) Close() error {
 	sender.mutex.Lock()
 	if sender.closed {
@@ -94,11 +98,15 @@ func (sender *Sender) Close() error {
 	sender.mutex.Unlock()
 
 	close(sender.done)
+	sender.flushLoopWait.Wait()
+	sender.postWait.Wait()
 	return nil
 }
 
 // runFlushLoop periodically flushes buffered span events.
 func (sender *Sender) runFlushLoop() {
+	defer sender.flushLoopWait.Done()
+
 	ticker := time.NewTicker(sender.config.FlushInterval)
 	defer ticker.Stop()
 
@@ -106,7 +114,9 @@ func (sender *Sender) runFlushLoop() {
 		select {
 		case <-ticker.C:
 			sender.mutex.Lock()
-			sender.flushLocked()
+			if !sender.closed {
+				sender.flushLocked()
+			}
 			sender.mutex.Unlock()
 		case <-sender.done:
 			return
@@ -124,7 +134,11 @@ func (sender *Sender) flushLocked() {
 	sender.buffer.Reset()
 	sender.eventCount = 0
 
-	go sender.postPayload(payload)
+	sender.postWait.Add(1)
+	go func() {
+		defer sender.postWait.Done()
+		sender.postPayload(payload)
+	}()
 }
 
 // postPayload delivers a CLEF batch to Seq and logs transport failures to stderr.

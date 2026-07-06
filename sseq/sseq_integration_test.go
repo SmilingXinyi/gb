@@ -66,8 +66,6 @@ func TestIntegrationSpanTreeWithSeqDocker(t *testing.T) {
 		t.Fatal("expected trace id from root span")
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
 	spans, err := querySeqSpans(traceID)
 	if err != nil {
 		t.Fatalf("query seq spans: %v", err)
