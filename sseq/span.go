@@ -2,6 +2,8 @@ package sseq
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -19,7 +21,7 @@ var (
 	setupMutex   sync.RWMutex
 )
 
-// Setup initializes the global Seq span sender.
+// Setup initializes the global span sender for the configured provider.
 func Setup(config Config) {
 	setupMutex.Lock()
 	defer setupMutex.Unlock()
@@ -30,19 +32,10 @@ func Setup(config Config) {
 	}
 
 	globalConfig = config
-	if config.Endpoint == "" {
-		return
-	}
-
-	globalSender = sender.New(sender.Config{
-		Endpoint:      config.Endpoint,
-		APIKey:        config.APIKey,
-		BatchSize:     config.BatchSize,
-		FlushInterval: config.FlushInterval,
-	})
+	globalSender = buildSender(config)
 }
 
-// Shutdown flushes and closes the global Seq span sender.
+// Shutdown flushes and closes the global span sender.
 func Shutdown() {
 	setupMutex.Lock()
 	defer setupMutex.Unlock()
@@ -51,6 +44,66 @@ func Shutdown() {
 		_ = globalSender.Close()
 		globalSender = nil
 	}
+}
+
+// buildSender creates the configured span sender. The caller must hold setupMutex.
+func buildSender(config Config) *sender.Sender {
+	provider := resolveProvider(config)
+	switch provider {
+	case ProviderHTTP:
+		httpConfig := config.HTTP
+		if httpConfig.Endpoint == "" {
+			httpConfig.Endpoint = config.Endpoint
+		}
+		if httpConfig.APIKey == "" {
+			httpConfig.APIKey = config.APIKey
+		}
+		if httpConfig.Endpoint == "" {
+			return nil
+		}
+		return sender.NewHTTP(sender.HTTPBatchConfig{
+			Endpoint:      httpConfig.Endpoint,
+			APIKey:        httpConfig.APIKey,
+			BatchSize:     config.BatchSize,
+			FlushInterval: config.FlushInterval,
+		})
+	case ProviderFile:
+		if config.File.Filename == "" {
+			return nil
+		}
+		fileSender, err := sender.NewFile(sender.FileBatchConfig{
+			File: sender.FileConfig{
+				Filename:   config.File.Filename,
+				MaxSize:    config.File.MaxSize,
+				MaxBackups: config.File.MaxBackups,
+				MaxAge:     config.File.MaxAge,
+				Compress:   config.File.Compress,
+			},
+			BatchSize:     config.BatchSize,
+			FlushInterval: config.FlushInterval,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sseq: create file provider: %v\n", err)
+			return nil
+		}
+		return fileSender
+	default:
+		return nil
+	}
+}
+
+// resolveProvider returns the active provider for the given config.
+func resolveProvider(config Config) Provider {
+	if config.Provider != "" {
+		return config.Provider
+	}
+	if config.File.Filename != "" {
+		return ProviderFile
+	}
+	if config.HTTP.Endpoint != "" || config.Endpoint != "" {
+		return ProviderHTTP
+	}
+	return ""
 }
 
 // Do executes a function within a span and ends the span automatically.
@@ -115,7 +168,7 @@ type Span struct {
 	sender      *sender.Sender
 }
 
-// End completes the span and sends it to Seq.
+// End completes the span and sends it to the configured provider.
 func (span *Span) End() {
 	if span == nil || span.ended {
 		return
