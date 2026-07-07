@@ -13,6 +13,16 @@ const (
 	defaultFileMaxAge     = 30
 )
 
+// FileFormat selects the span encoding written to disk.
+type FileFormat string
+
+const (
+	// FileFormatCLEF writes Seq-compatible CLEF JSON lines.
+	FileFormatCLEF FileFormat = "clef"
+	// FileFormatAxiom writes Axiom-compatible NDJSON for Vector file sources.
+	FileFormatAxiom FileFormat = "axiom"
+)
+
 // FileConfig defines rotated file output settings for span events.
 type FileConfig struct {
 	Filename   string
@@ -20,6 +30,8 @@ type FileConfig struct {
 	MaxBackups int
 	MaxAge     int
 	Compress   bool
+	// Format selects the on-disk encoding. Defaults to CLEF.
+	Format FileFormat
 }
 
 // FileProvider writes CLEF batches to a rotated log file.

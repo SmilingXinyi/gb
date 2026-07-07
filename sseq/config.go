@@ -8,16 +8,28 @@ type Provider string
 const (
 	// ProviderHTTP delivers spans to a Seq ingestion endpoint.
 	ProviderHTTP Provider = "http"
-	// ProviderFile delivers spans to a rotated CLEF file.
+	// ProviderFile delivers spans to a rotated span file.
 	ProviderFile Provider = "file"
+	// ProviderAxiom delivers spans directly to an Axiom dataset.
+	ProviderAxiom Provider = "axiom"
+)
+
+// FileFormat selects the on-disk span encoding for the file provider.
+type FileFormat string
+
+const (
+	// FileFormatCLEF writes Seq-compatible CLEF JSON lines.
+	FileFormatCLEF FileFormat = "clef"
+	// FileFormatAxiom writes Axiom-compatible NDJSON for Vector file sources.
+	FileFormatAxiom FileFormat = "axiom"
 )
 
 // Config defines span delivery settings.
 type Config struct {
 	// Provider selects the delivery backend. When empty, HTTP is used if Endpoint is set,
-	// otherwise file is used when File.Filename is set.
+	// otherwise file is used when File.Filename is set, otherwise Axiom when configured.
 	Provider Provider
-	// Application is added to every span as the Application property.
+	// Application is added to every span as the Application property or service.name.
 	Application string
 	// BatchSize is the number of span events to accumulate before flushing.
 	BatchSize int
@@ -27,6 +39,8 @@ type Config struct {
 	HTTP HTTPConfig
 	// File configures the rotated file provider.
 	File FileConfig
+	// Axiom configures the direct Axiom ingest provider.
+	Axiom AxiomConfig
 
 	// Endpoint is a shorthand for HTTP.Endpoint kept for backward compatibility.
 	Endpoint string
@@ -44,7 +58,7 @@ type HTTPConfig struct {
 
 // FileConfig defines rotated file output settings for span events.
 type FileConfig struct {
-	// Filename is the path to the span CLEF file.
+	// Filename is the path to the span file.
 	Filename string
 	// MaxSize is the maximum size of each file in megabytes.
 	MaxSize int
@@ -54,13 +68,27 @@ type FileConfig struct {
 	MaxAge int
 	// Compress indicates whether old files should be compressed.
 	Compress bool
+	// Format selects the on-disk encoding. Defaults to CLEF.
+	Format FileFormat
+}
+
+// AxiomConfig defines direct Axiom ingest settings.
+type AxiomConfig struct {
+	// Token is the Axiom API token with ingest permissions.
+	Token string
+	// Dataset is the Axiom dataset name that receives trace events.
+	Dataset string
+	// Domain is the Axiom API domain, e.g. api.axiom.co.
+	Domain string
+	// Endpoint optionally overrides the default ingest URL.
+	Endpoint string
 }
 
 // DefaultConfig returns sensible defaults for the Seq HTTP provider.
 func DefaultConfig() Config {
 	return Config{
-		Provider:      ProviderHTTP,
-		Endpoint:      "http://localhost:5342/ingest/clef",
+		Provider: ProviderHTTP,
+		Endpoint: "http://localhost:5342/ingest/clef",
 		HTTP: HTTPConfig{
 			Endpoint: "http://localhost:5342/ingest/clef",
 		},
@@ -79,6 +107,36 @@ func DefaultFileConfig() Config {
 			MaxBackups: 5,
 			MaxAge:     30,
 			Compress:   true,
+			Format:     FileFormatCLEF,
+		},
+		BatchSize:     20,
+		FlushInterval: time.Second,
+	}
+}
+
+// DefaultAxiomConfig returns sensible defaults for the Axiom provider.
+func DefaultAxiomConfig() Config {
+	return Config{
+		Provider: ProviderAxiom,
+		Axiom: AxiomConfig{
+			Domain: "api.axiom.co",
+		},
+		BatchSize:     20,
+		FlushInterval: time.Second,
+	}
+}
+
+// DefaultAxiomVectorFileConfig returns file defaults for a Vector -> Axiom pipeline.
+func DefaultAxiomVectorFileConfig() Config {
+	return Config{
+		Provider: ProviderFile,
+		File: FileConfig{
+			Filename:   "spans.ndjson",
+			MaxSize:    100,
+			MaxBackups: 5,
+			MaxAge:     30,
+			Compress:   true,
+			Format:     FileFormatAxiom,
 		},
 		BatchSize:     20,
 		FlushInterval: time.Second,
