@@ -21,7 +21,7 @@ func TestCloseWaitsForInFlightPost(t *testing.T) {
 	}))
 	defer server.Close()
 
-	sender := New(Config{
+	sender := NewHTTP(HTTPBatchConfig{
 		Endpoint:      server.URL,
 		BatchSize:     1,
 		FlushInterval: time.Hour,

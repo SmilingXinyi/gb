@@ -2,9 +2,7 @@ package sender
 
 import (
 	"bytes"
-	"fmt"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 )
@@ -12,11 +10,17 @@ import (
 const (
 	defaultBatchSize     = 20
 	defaultFlushInterval = time.Second
-	seqCLEFContentType   = "application/vnd.serilog.clef"
+	defaultHTTPTimeout   = 10 * time.Second
 )
 
-// Config defines HTTP delivery settings for span events.
-type Config struct {
+// BatchConfig defines buffering settings shared by all providers.
+type BatchConfig struct {
+	BatchSize     int
+	FlushInterval time.Duration
+}
+
+// HTTPBatchConfig defines HTTP provider settings with batching defaults.
+type HTTPBatchConfig struct {
 	Endpoint      string
 	APIKey        string
 	BatchSize     int
@@ -24,10 +28,17 @@ type Config struct {
 	HTTPClient    *http.Client
 }
 
-// Sender batches and posts CLEF span events to Seq.
+// FileBatchConfig defines file provider settings with batching defaults.
+type FileBatchConfig struct {
+	File          FileConfig
+	BatchSize     int
+	FlushInterval time.Duration
+}
+
+// Sender batches span events and delivers them through a single PayloadWriter.
 type Sender struct {
-	config        Config
-	httpClient    *http.Client
+	config        BatchConfig
+	writer        PayloadWriter
 	buffer        bytes.Buffer
 	eventCount    int
 	mutex         sync.Mutex
@@ -37,8 +48,8 @@ type Sender struct {
 	postWait      sync.WaitGroup
 }
 
-// New creates an asynchronous Seq span sender.
-func New(config Config) *Sender {
+// New creates an asynchronous span sender backed by the given payload writer.
+func New(config BatchConfig, writer PayloadWriter) *Sender {
 	if config.BatchSize <= 0 {
 		config.BatchSize = defaultBatchSize
 	}
@@ -46,15 +57,10 @@ func New(config Config) *Sender {
 		config.FlushInterval = defaultFlushInterval
 	}
 
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
-	}
-
 	sender := &Sender{
-		config:     config,
-		httpClient: httpClient,
-		done:       make(chan struct{}),
+		config: config,
+		writer: writer,
+		done:   make(chan struct{}),
 	}
 
 	sender.flushLoopWait.Add(1)
@@ -62,7 +68,35 @@ func New(config Config) *Sender {
 	return sender
 }
 
-// Send queues a span event for delivery to Seq.
+// NewHTTP creates a span sender that posts CLEF batches to Seq.
+func NewHTTP(config HTTPBatchConfig) *Sender {
+	batchConfig := BatchConfig{
+		BatchSize:     config.BatchSize,
+		FlushInterval: config.FlushInterval,
+	}
+	httpProvider := NewHTTPProvider(HTTPConfig{
+		Endpoint:   config.Endpoint,
+		APIKey:     config.APIKey,
+		HTTPClient: config.HTTPClient,
+	})
+	return New(batchConfig, httpProvider)
+}
+
+// NewFile creates a span sender that writes CLEF batches to a rotated file.
+func NewFile(config FileBatchConfig) (*Sender, error) {
+	fileProvider, err := NewFileProvider(config.File)
+	if err != nil {
+		return nil, err
+	}
+
+	batchConfig := BatchConfig{
+		BatchSize:     config.BatchSize,
+		FlushInterval: config.FlushInterval,
+	}
+	return New(batchConfig, fileProvider), nil
+}
+
+// Send queues a span event for delivery.
 func (sender *Sender) Send(event SpanEvent) error {
 	payload, err := EncodeSpanEvent(event)
 	if err != nil {
@@ -100,6 +134,9 @@ func (sender *Sender) Close() error {
 	close(sender.done)
 	sender.flushLoopWait.Wait()
 	sender.postWait.Wait()
+	if sender.writer != nil {
+		return sender.writer.Close()
+	}
 	return nil
 }
 
@@ -124,9 +161,9 @@ func (sender *Sender) runFlushLoop() {
 	}
 }
 
-// flushLocked sends buffered events to Seq. The caller must hold sender.mutex.
+// flushLocked sends buffered events to the configured provider. The caller must hold sender.mutex.
 func (sender *Sender) flushLocked() {
-	if sender.buffer.Len() == 0 {
+	if sender.buffer.Len() == 0 || sender.writer == nil {
 		return
 	}
 
@@ -137,31 +174,6 @@ func (sender *Sender) flushLocked() {
 	sender.postWait.Add(1)
 	go func() {
 		defer sender.postWait.Done()
-		sender.postPayload(payload)
+		sender.writer.WritePayload(payload)
 	}()
-}
-
-// postPayload delivers a CLEF batch to Seq and logs transport failures to stderr.
-func (sender *Sender) postPayload(payload []byte) {
-	request, err := http.NewRequest(http.MethodPost, sender.config.Endpoint, bytes.NewReader(payload))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sseq: create request: %v\n", err)
-		return
-	}
-
-	request.Header.Set("Content-Type", seqCLEFContentType)
-	if sender.config.APIKey != "" {
-		request.Header.Set("X-Seq-ApiKey", sender.config.APIKey)
-	}
-
-	response, err := sender.httpClient.Do(request)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sseq: send request: %v\n", err)
-		return
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusCreated {
-		fmt.Fprintf(os.Stderr, "sseq: unexpected status %d\n", response.StatusCode)
-	}
 }
