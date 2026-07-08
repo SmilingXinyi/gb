@@ -94,10 +94,11 @@ func buildSender(config Config) *sender.Sender {
 		}
 		axiomSender, err := sender.NewAxiom(sender.AxiomBatchConfig{
 			Axiom: sender.AxiomConfig{
-				Token:    config.Axiom.Token,
-				Dataset:  config.Axiom.Dataset,
-				Domain:   config.Axiom.Domain,
-				Endpoint: config.Axiom.Endpoint,
+				Token:      config.Axiom.Token,
+				Dataset:    config.Axiom.Dataset,
+				Domain:     config.Axiom.Domain,
+				Endpoint:   config.Axiom.Endpoint,
+				HTTPClient: config.Axiom.HTTPClient,
 			},
 			BatchSize:     config.BatchSize,
 			FlushInterval: config.FlushInterval,

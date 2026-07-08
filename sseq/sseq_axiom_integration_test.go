@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ const (
 	axiomQueryEndpoint = "https://api.axiom.co/v1/datasets/_apl?format=legacy"
 	axiomPollAttempts  = 12
 	axiomPollInterval  = 500 * time.Millisecond
+	expectedSpanCount  = 3
 )
 
 func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
@@ -32,15 +34,22 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 		t.Skip("AXIOM_TOKEN and AXIOM_DATASET are required for Axiom integration test")
 	}
 
+	ingestTracker := newAxiomIngestTracker(http.DefaultTransport)
+	httpClient := &http.Client{
+		Transport: ingestTracker,
+		Timeout:   30 * time.Second,
+	}
+
 	sseq.Setup(sseq.Config{
 		Provider:      sseq.ProviderAxiom,
 		Application:   "sseq-integration",
 		BatchSize:     1,
 		FlushInterval: 100 * time.Millisecond,
 		Axiom: sseq.AxiomConfig{
-			Token:   token,
-			Dataset: dataset,
-			Domain:  "api.axiom.co",
+			Token:      token,
+			Dataset:    dataset,
+			Domain:     "api.axiom.co",
+			HTTPClient: httpClient,
 		},
 	})
 
@@ -70,21 +79,37 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 		t.Fatal("expected trace id from root span")
 	}
 
-	spans, err := queryAxiomSpans(token, dataset, traceID)
-	if err != nil {
-		if strings.Contains(err.Error(), "token may lack query permission") {
-			t.Skipf("ingest completed but query verification skipped: %v", err)
-		}
-		t.Fatalf("query axiom spans: %v", err)
+	spans, queryErr := queryAxiomSpans(token, dataset, traceID)
+	if queryErr == nil {
+		verifyAxiomSpanTree(t, traceID, spans)
+		return
 	}
+
+	if !strings.Contains(queryErr.Error(), "token may lack query permission") {
+		t.Fatalf("query axiom spans: %v", queryErr)
+	}
+
+	ingestedEvents, ingestRequests := ingestTracker.stats()
+	if ingestRequests < expectedSpanCount {
+		t.Fatalf("expected at least %d ingest requests, got %d", expectedSpanCount, ingestRequests)
+	}
+	if ingestedEvents < expectedSpanCount {
+		t.Fatalf("expected at least %d ingested events, got %d (query unavailable: %v)", expectedSpanCount, ingestedEvents, queryErr)
+	}
+
+	t.Logf("query verification skipped (%v); ingest verified %d events across %d requests", queryErr, ingestedEvents, ingestRequests)
+}
+
+func verifyAxiomSpanTree(t *testing.T, traceID string, spans []axiomSpan) {
+	t.Helper()
 
 	spanByName := make(map[string]axiomSpan, len(spans))
 	for _, span := range spans {
 		spanByName[span.Name] = span
 	}
 
-	if len(spanByName) < 3 {
-		t.Fatalf("expected 3 spans, got %d: %+v", len(spanByName), spans)
+	if len(spanByName) < expectedSpanCount {
+		t.Fatalf("expected %d spans, got %d: %+v", expectedSpanCount, len(spanByName), spans)
 	}
 
 	root, ok := spanByName["HTTP GET /api/users"]
@@ -121,6 +146,56 @@ type axiomSpan struct {
 	Kind         string
 }
 
+type axiomIngestTracker struct {
+	base           http.RoundTripper
+	requestCount   atomic.Int32
+	ingestedEvents atomic.Int32
+}
+
+func newAxiomIngestTracker(base http.RoundTripper) *axiomIngestTracker {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return &axiomIngestTracker{base: base}
+}
+
+func (tracker *axiomIngestTracker) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := tracker.base.RoundTrip(request)
+	if err != nil {
+		return response, err
+	}
+	if request.Method != http.MethodPost || !strings.Contains(request.URL.Path, "/ingest") {
+		return response, nil
+	}
+
+	responseBody, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	response.Body = io.NopCloser(bytes.NewReader(responseBody))
+
+	if response.StatusCode == http.StatusOK {
+		tracker.requestCount.Add(1)
+		tracker.ingestedEvents.Add(parseAxiomIngestedCount(responseBody))
+	}
+	return response, nil
+}
+
+func (tracker *axiomIngestTracker) stats() (ingestedEvents int, ingestRequests int) {
+	return int(tracker.ingestedEvents.Load()), int(tracker.requestCount.Load())
+}
+
+func parseAxiomIngestedCount(body []byte) int32 {
+	var ingestResponse struct {
+		Ingested int32 `json:"ingested"`
+	}
+	if err := json.Unmarshal(body, &ingestResponse); err != nil {
+		return 0
+	}
+	return ingestResponse.Ingested
+}
+
 func queryAxiomSpans(token, dataset, traceID string) ([]axiomSpan, error) {
 	startTime := time.Now().UTC().Add(-5 * time.Minute)
 	endTime := time.Now().UTC().Add(time.Minute)
@@ -136,10 +211,10 @@ func queryAxiomSpans(token, dataset, traceID string) ([]axiomSpan, error) {
 		spans, err := runAxiomQuery(token, query, startTime, endTime)
 		if err != nil {
 			lastErr = err
-		} else if len(spans) >= 3 {
+		} else if len(spans) >= expectedSpanCount {
 			return spans, nil
 		} else {
-			lastErr = fmt.Errorf("found %d spans, waiting for 3", len(spans))
+			lastErr = fmt.Errorf("found %d spans, waiting for %d", len(spans), expectedSpanCount)
 		}
 		time.Sleep(axiomPollInterval)
 	}

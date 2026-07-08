@@ -1,6 +1,9 @@
 package sseq
 
-import "time"
+import (
+	"net/http"
+	"time"
+)
 
 // Provider selects the span delivery backend.
 type Provider string
@@ -82,6 +85,8 @@ type AxiomConfig struct {
 	Domain string
 	// Endpoint optionally overrides the default ingest URL.
 	Endpoint string
+	// HTTPClient optionally overrides the default HTTP client.
+	HTTPClient *http.Client
 }
 
 // DefaultConfig returns sensible defaults for the Seq HTTP provider.
