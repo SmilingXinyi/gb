@@ -14,18 +14,18 @@ import (
 
 const (
 	integrationApplication = "sseq-integration"
-	integrationSpanCount   = 6
+	integrationSpanCount   = 4
 )
 
+// Linear integration span names. The waterfall should read top-to-bottom as A → B → C → D.
 const (
-	rootSpanName = "HTTP POST /api/orders"
-
-	spanValidateAPIKey      = "1. Validate API key"
-	spanFetchOrderDetails   = "2. Fetch order details"
-	spanQueryOrdersTable    = "2.1 Query orders table"
-	spanQueryOrderItems     = "2.2 Query order_items table"
-	spanFormatJSONResponse  = "3. Format JSON response"
+	spanStepA = "A"
+	spanStepB = "B"
+	spanStepC = "C"
+	spanStepD = "D"
 )
+
+var integrationLinearSpanNames = []string{spanStepA, spanStepB, spanStepC, spanStepD}
 
 // integrationSpanRecord is the normalized span view used by integration assertions.
 type integrationSpanRecord struct {
@@ -37,56 +37,33 @@ type integrationSpanRecord struct {
 	Duration     time.Duration
 }
 
-// runIntegrationSpanScenario executes a sequential checkout-style span tree:
+// runIntegrationSpanScenario executes a linear span chain where each step runs after the previous one:
 //
-//	HTTP POST /api/orders
-//	├── 1. Validate API key
-//	├── 2. Fetch order details
-//	│   ├── 2.1 Query orders table
-//	│   └── 2.2 Query order_items table
-//	└── 3. Format JSON response
+//	A
+//	└── B
+//	    └── C
+//	        └── D
 func runIntegrationSpanScenario() (traceID string, err error) {
-	requestContext, rootSpan := sseq.Start(context.Background(), rootSpanName)
-	traceID = rootSpan.TraceID()
+	requestContext, spanA := sseq.Start(context.Background(), spanStepA)
+	traceID = spanA.TraceID()
 
-	if err := sseq.Do(requestContext, spanValidateAPIKey, func(ctx context.Context) error {
-		time.Sleep(20 * time.Millisecond)
-		return nil
-	}); err != nil {
-		rootSpan.End()
-		return traceID, err
-	}
+	time.Sleep(30 * time.Millisecond)
 
-	if err := sseq.Do(requestContext, spanFetchOrderDetails, func(ctx context.Context) error {
-		time.Sleep(5 * time.Millisecond)
-		if err := sseq.Do(ctx, spanQueryOrdersTable, func(ctx context.Context) error {
-			time.Sleep(35 * time.Millisecond)
-			return nil
-		}); err != nil {
-			return err
-		}
-		return sseq.Do(ctx, spanQueryOrderItems, func(ctx context.Context) error {
+	err = sseq.Do(requestContext, spanStepB, func(stepBContext context.Context) error {
+		time.Sleep(25 * time.Millisecond)
+		return sseq.Do(stepBContext, spanStepC, func(stepCContext context.Context) error {
 			time.Sleep(20 * time.Millisecond)
-			return nil
+			return sseq.Do(stepCContext, spanStepD, func(context.Context) error {
+				time.Sleep(15 * time.Millisecond)
+				return nil
+			})
 		})
-	}); err != nil {
-		rootSpan.End()
-		return traceID, err
-	}
-
-	if err := sseq.Do(requestContext, spanFormatJSONResponse, func(ctx context.Context) error {
-		time.Sleep(15 * time.Millisecond)
-		return nil
-	}); err != nil {
-		rootSpan.End()
-		return traceID, err
-	}
-
-	rootSpan.End()
-	return traceID, nil
+	})
+	spanA.End()
+	return traceID, err
 }
 
-// verifyIntegrationSpanTree asserts hierarchy, ordering, and timing for the scenario tree.
+// verifyIntegrationSpanTree asserts the linear A → B → C → D chain: parent links and sequential timing.
 func verifyIntegrationSpanTree(t *testing.T, traceID string, spans []integrationSpanRecord) {
 	t.Helper()
 
@@ -102,56 +79,44 @@ func verifyIntegrationSpanTree(t *testing.T, traceID string, spans []integration
 		spanByName[span.Name] = span
 	}
 
-	root, ok := spanByName[rootSpanName]
-	if !ok {
-		t.Fatalf("missing root span %q in %+v", rootSpanName, spanByName)
-	}
-	if root.ParentSpanID != "" {
-		t.Fatalf("root span must not have parent_span_id, got %q", root.ParentSpanID)
-	}
-
-	expectedParents := map[string]string{
-		spanValidateAPIKey:     rootSpanName,
-		spanFetchOrderDetails:  rootSpanName,
-		spanQueryOrdersTable:   spanFetchOrderDetails,
-		spanQueryOrderItems:    spanFetchOrderDetails,
-		spanFormatJSONResponse: rootSpanName,
-	}
-	for spanName, parentName := range expectedParents {
+	for index, spanName := range integrationLinearSpanNames {
 		span, found := spanByName[spanName]
 		if !found {
-			t.Fatalf("missing span %q", spanName)
+			t.Fatalf("missing span %q in %+v", spanName, spanByName)
 		}
+
+		if index == 0 {
+			if span.ParentSpanID != "" {
+				t.Fatalf("root span %q must not have parent_span_id, got %q", spanName, span.ParentSpanID)
+			}
+			continue
+		}
+
+		parentName := integrationLinearSpanNames[index-1]
 		parent := spanByName[parentName]
 		if span.ParentSpanID != parent.SpanID {
 			t.Fatalf("span %q parent_span_id = %q, want %q (%q)", spanName, span.ParentSpanID, parent.SpanID, parentName)
 		}
 	}
 
-	validate := spanByName[spanValidateAPIKey]
-	fetch := spanByName[spanFetchOrderDetails]
-	queryOrders := spanByName[spanQueryOrdersTable]
-	queryItems := spanByName[spanQueryOrderItems]
-	format := spanByName[spanFormatJSONResponse]
+	stepA := spanByName[spanStepA]
+	stepB := spanByName[spanStepB]
+	stepC := spanByName[spanStepC]
+	stepD := spanByName[spanStepD]
 
-	assertStartsBefore(t, validate.Name, validate.StartTime, fetch.Name, fetch.StartTime)
-	assertStartsBefore(t, fetch.Name, fetch.StartTime, format.Name, format.StartTime)
-	assertStartsBefore(t, queryOrders.Name, queryOrders.StartTime, queryItems.Name, queryItems.StartTime)
+	assertStartsBefore(t, stepA.Name, stepA.StartTime, stepB.Name, stepB.StartTime)
+	assertStartsBefore(t, stepB.Name, stepB.StartTime, stepC.Name, stepC.StartTime)
+	assertStartsBefore(t, stepC.Name, stepC.StartTime, stepD.Name, stepD.StartTime)
 
-	assertEndsBeforeStart(t, validate, fetch)
-	assertEndsBeforeStart(t, validate, format)
-	assertEndsBeforeStart(t, queryOrders, queryItems)
-	assertEndsBeforeStart(t, queryItems, format)
-	assertEndsBeforeStart(t, fetch, format)
+	assertNestedWithin(t, stepA, stepB)
+	assertNestedWithin(t, stepB, stepC)
+	assertNestedWithin(t, stepC, stepD)
 
-	assertNestedWithin(t, fetch, queryOrders)
-	assertNestedWithin(t, fetch, queryItems)
-
-	if root.Duration > 0 && format.Duration > 0 {
-		rootEnd := root.StartTime.Add(root.Duration)
-		formatEnd := format.StartTime.Add(format.Duration)
-		if formatEnd.After(rootEnd) {
-			t.Fatalf("root span should end last: root ends %v, format ends %v", rootEnd, formatEnd)
+	if stepA.Duration > 0 && stepD.Duration > 0 {
+		chainEnd := stepD.StartTime.Add(stepD.Duration)
+		rootEnd := stepA.StartTime.Add(stepA.Duration)
+		if chainEnd.After(rootEnd) {
+			t.Fatalf("linear chain should finish inside span A: D ends %v, A ends %v", chainEnd, rootEnd)
 		}
 	}
 }
@@ -163,17 +128,6 @@ func assertStartsBefore(t *testing.T, earlierName string, earlierStart time.Time
 	}
 	if !earlierStart.Before(laterStart) {
 		t.Fatalf("expected %q to start before %q: %v vs %v", earlierName, laterName, earlierStart, laterStart)
-	}
-}
-
-func assertEndsBeforeStart(t *testing.T, earlier integrationSpanRecord, later integrationSpanRecord) {
-	t.Helper()
-	if earlier.StartTime.IsZero() || later.StartTime.IsZero() || earlier.Duration <= 0 {
-		return
-	}
-	earlierEnd := earlier.StartTime.Add(earlier.Duration)
-	if !earlierEnd.Before(later.StartTime) && !earlierEnd.Equal(later.StartTime) {
-		t.Fatalf("expected %q to finish before %q starts: end=%v start=%v", earlier.Name, later.Name, earlierEnd, later.StartTime)
 	}
 }
 
@@ -214,6 +168,9 @@ func TestIntegrationSpanScenarioClef(t *testing.T) {
 	traceID, err := runIntegrationSpanScenario()
 	if err != nil {
 		t.Fatalf("runIntegrationSpanScenario() error = %v", err)
+	}
+	if traceID == "" {
+		t.Fatal("expected trace id from linear span chain")
 	}
 	sseq.Shutdown()
 
