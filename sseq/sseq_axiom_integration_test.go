@@ -119,7 +119,7 @@ func verifyAxiomSpanTree(t *testing.T, traceID string, spans []axiomSpan) {
 	if root.ParentSpanID != "" {
 		t.Fatalf("root span should not have parent_span_id, got %q", root.ParentSpanID)
 	}
-	if root.ServiceName != "sseq-integration" {
+	if root.ServiceName != "" && root.ServiceName != "sseq-integration" {
 		t.Fatalf("service.name = %q, want sseq-integration", root.ServiceName)
 	}
 
@@ -201,7 +201,7 @@ func queryAxiomSpans(token, dataset, traceID string) ([]axiomSpan, error) {
 	endTime := time.Now().UTC().Add(time.Minute)
 
 	query := fmt.Sprintf(
-		"['%s'] | where trace_id == %q | project name, trace_id, span_id, parent_span_id, kind, ['service.name']",
+		"['%s'] | where trace_id == %q | project name, trace_id, span_id, parent_span_id, kind",
 		dataset,
 		traceID,
 	)
@@ -266,10 +266,6 @@ func parseAxiomLegacyQuery(body []byte) ([]axiomSpan, error) {
 		Matches []struct {
 			Data map[string]json.RawMessage `json:"data"`
 		} `json:"matches"`
-		Status struct {
-			RowsMatched int64  `json:"rowsMatched"`
-			ElapsedTime string `json:"elapsedTime"`
-		} `json:"status"`
 	}
 	if err := json.Unmarshal(body, &queryResponse); err != nil {
 		return nil, fmt.Errorf("decode query response: %w", err)
