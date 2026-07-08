@@ -57,7 +57,7 @@ func NewAxiomProvider(config AxiomConfig) (*AxiomProvider, error) {
 
 	endpoint := strings.TrimSpace(config.Endpoint)
 	if endpoint == "" {
-		endpoint = fmt.Sprintf("https://%s/v1/ingest/%s", domain, config.Dataset)
+		endpoint = fmt.Sprintf("https://%s/v1/datasets/%s/ingest", domain, config.Dataset)
 	}
 
 	httpClient := config.HTTPClient

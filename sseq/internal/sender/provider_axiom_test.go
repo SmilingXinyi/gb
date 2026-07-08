@@ -9,6 +9,36 @@ import (
 	"time"
 )
 
+func TestNewAxiomProviderDefaultEndpoint(t *testing.T) {
+	provider, err := NewAxiomProvider(AxiomConfig{
+		Token:   "test-token",
+		Dataset: "av-dataset",
+	})
+	if err != nil {
+		t.Fatalf("NewAxiomProvider() error = %v", err)
+	}
+
+	want := "https://api.axiom.co/v1/datasets/av-dataset/ingest"
+	if provider.endpoint != want {
+		t.Fatalf("endpoint = %q, want %q", provider.endpoint, want)
+	}
+}
+
+func TestNewAxiomProviderCustomDomain(t *testing.T) {
+	provider, err := NewAxiomProvider(AxiomConfig{
+		Token:   "test-token",
+		Dataset: "traces",
+		Domain:  "custom.axiom.co",
+	})
+	if err != nil {
+		t.Fatalf("NewAxiomProvider() error = %v", err)
+	}
+
+	if !strings.HasSuffix(provider.endpoint, "/v1/datasets/traces/ingest") {
+		t.Fatalf("endpoint = %q", provider.endpoint)
+	}
+}
+
 func TestAxiomProviderPostsNDJSON(t *testing.T) {
 	var receivedBody string
 	var contentType string
