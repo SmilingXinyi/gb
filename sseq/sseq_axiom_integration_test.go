@@ -2,7 +2,6 @@ package sseq_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,7 +19,6 @@ const (
 	axiomQueryEndpoint = "https://api.axiom.co/v1/datasets/_apl?format=legacy"
 	axiomPollAttempts  = 12
 	axiomPollInterval  = 500 * time.Millisecond
-	expectedSpanCount  = 3
 )
 
 func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
@@ -42,7 +40,7 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 
 	sseq.Setup(sseq.Config{
 		Provider:      sseq.ProviderAxiom,
-		Application:   "sseq-integration",
+		Application:   integrationApplication,
 		BatchSize:     1,
 		FlushInterval: 100 * time.Millisecond,
 		Axiom: sseq.AxiomConfig{
@@ -52,36 +50,21 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 			HTTPClient: httpClient,
 		},
 	})
+	t.Cleanup(sseq.Shutdown)
 
-	requestContext, rootSpan := sseq.Start(context.Background(), "HTTP GET /api/users")
-	traceID := rootSpan.TraceID()
-
-	err := sseq.Do(requestContext, "Authenticate user", func(ctx context.Context) error {
-		time.Sleep(15 * time.Millisecond)
-		return nil
-	})
+	traceID, err := runIntegrationSpanScenario()
 	if err != nil {
-		t.Fatalf("auth span error = %v", err)
+		t.Fatalf("runIntegrationSpanScenario() error = %v", err)
 	}
-
-	err = sseq.Do(requestContext, "Query users table", func(ctx context.Context) error {
-		time.Sleep(25 * time.Millisecond)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("db span error = %v", err)
-	}
-
-	rootSpan.End()
-	sseq.Shutdown()
-
 	if traceID == "" {
 		t.Fatal("expected trace id from root span")
 	}
 
+	sseq.Shutdown()
+
 	spans, queryErr := queryAxiomSpans(token, dataset, traceID)
 	if queryErr == nil {
-		verifyAxiomSpanTree(t, traceID, spans)
+		verifyIntegrationSpanTree(t, traceID, spans)
 		return
 	}
 
@@ -90,60 +73,14 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 	}
 
 	ingestedEvents, ingestRequests := ingestTracker.stats()
-	if ingestRequests < expectedSpanCount {
-		t.Fatalf("expected at least %d ingest requests, got %d", expectedSpanCount, ingestRequests)
+	if ingestRequests < integrationSpanCount {
+		t.Fatalf("expected at least %d ingest requests, got %d", integrationSpanCount, ingestRequests)
 	}
-	if ingestedEvents < expectedSpanCount {
-		t.Fatalf("expected at least %d ingested events, got %d (query unavailable: %v)", expectedSpanCount, ingestedEvents, queryErr)
+	if ingestedEvents < integrationSpanCount {
+		t.Fatalf("expected at least %d ingested events, got %d (query unavailable: %v)", integrationSpanCount, ingestedEvents, queryErr)
 	}
 
 	t.Logf("query verification skipped (%v); ingest verified %d events across %d requests", queryErr, ingestedEvents, ingestRequests)
-}
-
-func verifyAxiomSpanTree(t *testing.T, traceID string, spans []axiomSpan) {
-	t.Helper()
-
-	spanByName := make(map[string]axiomSpan, len(spans))
-	for _, span := range spans {
-		spanByName[span.Name] = span
-	}
-
-	if len(spanByName) < expectedSpanCount {
-		t.Fatalf("expected %d spans, got %d: %+v", expectedSpanCount, len(spanByName), spans)
-	}
-
-	root, ok := spanByName["HTTP GET /api/users"]
-	if !ok {
-		t.Fatalf("missing root span in %+v", spanByName)
-	}
-	if root.ParentSpanID != "" {
-		t.Fatalf("root span should not have parent_span_id, got %q", root.ParentSpanID)
-	}
-	if root.ServiceName != "" && root.ServiceName != "sseq-integration" {
-		t.Fatalf("service.name = %q, want sseq-integration", root.ServiceName)
-	}
-
-	for _, name := range []string{"Authenticate user", "Query users table"} {
-		child, found := spanByName[name]
-		if !found {
-			t.Fatalf("missing child span %q", name)
-		}
-		if child.ParentSpanID != root.SpanID {
-			t.Fatalf("span %q parent_span_id = %q, want %q", name, child.ParentSpanID, root.SpanID)
-		}
-		if child.TraceID != traceID {
-			t.Fatalf("span %q trace_id = %q, want %q", name, child.TraceID, traceID)
-		}
-	}
-}
-
-type axiomSpan struct {
-	Name         string
-	TraceID      string
-	SpanID       string
-	ParentSpanID string
-	ServiceName  string
-	Kind         string
 }
 
 type axiomIngestTracker struct {
@@ -196,12 +133,12 @@ func parseAxiomIngestedCount(body []byte) int32 {
 	return ingestResponse.Ingested
 }
 
-func queryAxiomSpans(token, dataset, traceID string) ([]axiomSpan, error) {
+func queryAxiomSpans(token, dataset, traceID string) ([]integrationSpanRecord, error) {
 	startTime := time.Now().UTC().Add(-5 * time.Minute)
 	endTime := time.Now().UTC().Add(time.Minute)
 
 	query := fmt.Sprintf(
-		"['%s'] | where trace_id == %q | project name, trace_id, span_id, parent_span_id, kind",
+		"['%s'] | where trace_id == %q | project _time, name, trace_id, span_id, parent_span_id, kind, duration",
 		dataset,
 		traceID,
 	)
@@ -211,10 +148,10 @@ func queryAxiomSpans(token, dataset, traceID string) ([]axiomSpan, error) {
 		spans, err := runAxiomQuery(token, query, startTime, endTime)
 		if err != nil {
 			lastErr = err
-		} else if len(spans) >= expectedSpanCount {
+		} else if len(spans) >= integrationSpanCount {
 			return spans, nil
 		} else {
-			lastErr = fmt.Errorf("found %d spans, waiting for %d", len(spans), expectedSpanCount)
+			lastErr = fmt.Errorf("found %d spans, waiting for %d", len(spans), integrationSpanCount)
 		}
 		time.Sleep(axiomPollInterval)
 	}
@@ -224,7 +161,7 @@ func queryAxiomSpans(token, dataset, traceID string) ([]axiomSpan, error) {
 	return nil, lastErr
 }
 
-func runAxiomQuery(token, query string, startTime, endTime time.Time) ([]axiomSpan, error) {
+func runAxiomQuery(token, query string, startTime, endTime time.Time) ([]integrationSpanRecord, error) {
 	requestBody, err := json.Marshal(map[string]string{
 		"apl":       query,
 		"startTime": startTime.Format(time.RFC3339Nano),
@@ -261,7 +198,7 @@ func runAxiomQuery(token, query string, startTime, endTime time.Time) ([]axiomSp
 	return parseAxiomLegacyQuery(body)
 }
 
-func parseAxiomLegacyQuery(body []byte) ([]axiomSpan, error) {
+func parseAxiomLegacyQuery(body []byte) ([]integrationSpanRecord, error) {
 	var queryResponse struct {
 		Matches []struct {
 			Data map[string]json.RawMessage `json:"data"`
@@ -271,15 +208,20 @@ func parseAxiomLegacyQuery(body []byte) ([]axiomSpan, error) {
 		return nil, fmt.Errorf("decode query response: %w", err)
 	}
 
-	spans := make([]axiomSpan, 0, len(queryResponse.Matches))
+	spans := make([]integrationSpanRecord, 0, len(queryResponse.Matches))
 	for _, match := range queryResponse.Matches {
-		span := axiomSpan{
+		startTime, err := time.Parse(time.RFC3339Nano, decodeAxiomString(match.Data["_time"]))
+		if err != nil {
+			startTime, _ = time.Parse(time.RFC3339, decodeAxiomString(match.Data["_time"]))
+		}
+
+		span := integrationSpanRecord{
 			Name:         decodeAxiomString(match.Data["name"]),
 			TraceID:      decodeAxiomString(match.Data["trace_id"]),
 			SpanID:       decodeAxiomString(match.Data["span_id"]),
 			ParentSpanID: decodeAxiomString(match.Data["parent_span_id"]),
-			ServiceName:  decodeAxiomString(match.Data["service.name"]),
-			Kind:         decodeAxiomString(match.Data["kind"]),
+			StartTime:    startTime,
+			Duration:     parseAxiomDuration(decodeAxiomString(match.Data["duration"])),
 		}
 		if span.Name == "" && span.TraceID == "" {
 			continue
@@ -298,4 +240,15 @@ func decodeAxiomString(raw json.RawMessage) string {
 		return value
 	}
 	return strings.Trim(string(raw), `"`)
+}
+
+func parseAxiomDuration(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	parsed, err := time.ParseDuration(value)
+	if err == nil {
+		return parsed
+	}
+	return 0
 }
