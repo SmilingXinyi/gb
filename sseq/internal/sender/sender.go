@@ -38,6 +38,7 @@ type FileBatchConfig struct {
 // Sender batches span events and delivers them through a single PayloadWriter.
 type Sender struct {
 	config        BatchConfig
+	encoder       PayloadEncoder
 	writer        PayloadWriter
 	buffer        bytes.Buffer
 	eventCount    int
@@ -48,8 +49,8 @@ type Sender struct {
 	postWait      sync.WaitGroup
 }
 
-// New creates an asynchronous span sender backed by the given payload writer.
-func New(config BatchConfig, writer PayloadWriter) *Sender {
+// New creates an asynchronous span sender backed by the given encoder and payload writer.
+func New(config BatchConfig, encoder PayloadEncoder, writer PayloadWriter) *Sender {
 	if config.BatchSize <= 0 {
 		config.BatchSize = defaultBatchSize
 	}
@@ -58,9 +59,10 @@ func New(config BatchConfig, writer PayloadWriter) *Sender {
 	}
 
 	sender := &Sender{
-		config: config,
-		writer: writer,
-		done:   make(chan struct{}),
+		config:  config,
+		encoder: encoder,
+		writer:  writer,
+		done:    make(chan struct{}),
 	}
 
 	sender.flushLoopWait.Add(1)
@@ -79,10 +81,10 @@ func NewHTTP(config HTTPBatchConfig) *Sender {
 		APIKey:     config.APIKey,
 		HTTPClient: config.HTTPClient,
 	})
-	return New(batchConfig, httpProvider)
+	return New(batchConfig, ClefEncoder{}, httpProvider)
 }
 
-// NewFile creates a span sender that writes CLEF batches to a rotated file.
+// NewFile creates a span sender that writes encoded batches to a rotated file.
 func NewFile(config FileBatchConfig) (*Sender, error) {
 	fileProvider, err := NewFileProvider(config.File)
 	if err != nil {
@@ -93,12 +95,34 @@ func NewFile(config FileBatchConfig) (*Sender, error) {
 		BatchSize:     config.BatchSize,
 		FlushInterval: config.FlushInterval,
 	}
-	return New(batchConfig, fileProvider), nil
+	return New(batchConfig, encoderForFileFormat(config.File.Format), fileProvider), nil
+}
+
+// NewAxiom creates a span sender that posts Axiom trace NDJSON batches.
+func NewAxiom(config AxiomBatchConfig) (*Sender, error) {
+	axiomProvider, err := NewAxiomProvider(config.Axiom)
+	if err != nil {
+		return nil, err
+	}
+
+	batchConfig := BatchConfig{
+		BatchSize:     config.BatchSize,
+		FlushInterval: config.FlushInterval,
+	}
+	return New(batchConfig, AxiomEncoder{}, axiomProvider), nil
+}
+
+// encoderForFileFormat returns the encoder used by the file provider.
+func encoderForFileFormat(format FileFormat) PayloadEncoder {
+	if format == FileFormatAxiom {
+		return AxiomEncoder{}
+	}
+	return ClefEncoder{}
 }
 
 // Send queues a span event for delivery.
 func (sender *Sender) Send(event SpanEvent) error {
-	payload, err := EncodeSpanEvent(event)
+	payload, err := sender.encoder.Encode(event)
 	if err != nil {
 		return err
 	}
