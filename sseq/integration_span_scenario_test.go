@@ -14,11 +14,12 @@ import (
 
 const (
 	integrationApplication = "sseq-integration"
-	integrationSpanCount   = 4
+	integrationSpanCount   = 5
 )
 
-// Linear integration span names. The waterfall should read top-to-bottom as A → B → C → D.
 const (
+	rootSpanName = "Linear pipeline"
+
 	spanStepA = "A"
 	spanStepB = "B"
 	spanStepC = "C"
@@ -26,6 +27,18 @@ const (
 )
 
 var integrationLinearSpanNames = []string{spanStepA, spanStepB, spanStepC, spanStepD}
+
+type linearSpanStep struct {
+	name     string
+	duration time.Duration
+}
+
+var integrationLinearSteps = []linearSpanStep{
+	{name: spanStepA, duration: 30 * time.Millisecond},
+	{name: spanStepB, duration: 25 * time.Millisecond},
+	{name: spanStepC, duration: 20 * time.Millisecond},
+	{name: spanStepD, duration: 15 * time.Millisecond},
+}
 
 // integrationSpanRecord is the normalized span view used by integration assertions.
 type integrationSpanRecord struct {
@@ -37,33 +50,33 @@ type integrationSpanRecord struct {
 	Duration     time.Duration
 }
 
-// runIntegrationSpanScenario executes a linear span chain where each step runs after the previous one:
+// runIntegrationSpanScenario executes sequential sibling spans under one root:
 //
-//	A
-//	└── B
-//	    └── C
-//	        └── D
+//	Linear pipeline
+//	├── A   (runs, completes)
+//	├── B   (runs, completes)
+//	├── C   (runs, completes)
+//	└── D   (runs, completes)
 func runIntegrationSpanScenario() (traceID string, err error) {
-	requestContext, spanA := sseq.Start(context.Background(), spanStepA)
-	traceID = spanA.TraceID()
+	requestContext, rootSpan := sseq.Start(context.Background(), rootSpanName)
+	traceID = rootSpan.TraceID()
 
-	time.Sleep(30 * time.Millisecond)
-
-	err = sseq.Do(requestContext, spanStepB, func(stepBContext context.Context) error {
-		time.Sleep(25 * time.Millisecond)
-		return sseq.Do(stepBContext, spanStepC, func(stepCContext context.Context) error {
-			time.Sleep(20 * time.Millisecond)
-			return sseq.Do(stepCContext, spanStepD, func(context.Context) error {
-				time.Sleep(15 * time.Millisecond)
-				return nil
-			})
+	for _, step := range integrationLinearSteps {
+		stepErr := sseq.Do(requestContext, step.name, func(context.Context) error {
+			time.Sleep(step.duration)
+			return nil
 		})
-	})
-	spanA.End()
-	return traceID, err
+		if stepErr != nil {
+			rootSpan.End()
+			return traceID, stepErr
+		}
+	}
+
+	rootSpan.End()
+	return traceID, nil
 }
 
-// verifyIntegrationSpanTree asserts the linear A → B → C → D chain: parent links and sequential timing.
+// verifyIntegrationSpanTree asserts sequential A → B → C → D execution as sibling spans.
 func verifyIntegrationSpanTree(t *testing.T, traceID string, spans []integrationSpanRecord) {
 	t.Helper()
 
@@ -79,44 +92,46 @@ func verifyIntegrationSpanTree(t *testing.T, traceID string, spans []integration
 		spanByName[span.Name] = span
 	}
 
-	for index, spanName := range integrationLinearSpanNames {
+	root, ok := spanByName[rootSpanName]
+	if !ok {
+		t.Fatalf("missing root span %q in %+v", rootSpanName, spanByName)
+	}
+	if root.ParentSpanID != "" {
+		t.Fatalf("root span must not have parent_span_id, got %q", root.ParentSpanID)
+	}
+
+	for _, spanName := range integrationLinearSpanNames {
 		span, found := spanByName[spanName]
 		if !found {
-			t.Fatalf("missing span %q in %+v", spanName, spanByName)
+			t.Fatalf("missing span %q", spanName)
 		}
-
-		if index == 0 {
-			if span.ParentSpanID != "" {
-				t.Fatalf("root span %q must not have parent_span_id, got %q", spanName, span.ParentSpanID)
-			}
-			continue
-		}
-
-		parentName := integrationLinearSpanNames[index-1]
-		parent := spanByName[parentName]
-		if span.ParentSpanID != parent.SpanID {
-			t.Fatalf("span %q parent_span_id = %q, want %q (%q)", spanName, span.ParentSpanID, parent.SpanID, parentName)
+		if span.ParentSpanID != root.SpanID {
+			t.Fatalf("span %q parent_span_id = %q, want %q (%q)", spanName, span.ParentSpanID, root.SpanID, rootSpanName)
 		}
 	}
 
-	stepA := spanByName[spanStepA]
-	stepB := spanByName[spanStepB]
-	stepC := spanByName[spanStepC]
-	stepD := spanByName[spanStepD]
+	orderedSteps := make([]integrationSpanRecord, 0, len(integrationLinearSpanNames))
+	for _, spanName := range integrationLinearSpanNames {
+		orderedSteps = append(orderedSteps, spanByName[spanName])
+	}
 
-	assertStartsBefore(t, stepA.Name, stepA.StartTime, stepB.Name, stepB.StartTime)
-	assertStartsBefore(t, stepB.Name, stepB.StartTime, stepC.Name, stepC.StartTime)
-	assertStartsBefore(t, stepC.Name, stepC.StartTime, stepD.Name, stepD.StartTime)
+	for index := 1; index < len(orderedSteps); index++ {
+		previous := orderedSteps[index-1]
+		current := orderedSteps[index]
+		assertStartsBefore(t, previous.Name, previous.StartTime, current.Name, current.StartTime)
+		assertEndsBeforeStart(t, previous, current)
+	}
 
-	assertNestedWithin(t, stepA, stepB)
-	assertNestedWithin(t, stepB, stepC)
-	assertNestedWithin(t, stepC, stepD)
+	for _, step := range orderedSteps {
+		assertNestedWithin(t, root, step)
+	}
 
-	if stepA.Duration > 0 && stepD.Duration > 0 {
-		chainEnd := stepD.StartTime.Add(stepD.Duration)
-		rootEnd := stepA.StartTime.Add(stepA.Duration)
-		if chainEnd.After(rootEnd) {
-			t.Fatalf("linear chain should finish inside span A: D ends %v, A ends %v", chainEnd, rootEnd)
+	if root.Duration > 0 {
+		lastStep := orderedSteps[len(orderedSteps)-1]
+		rootEnd := root.StartTime.Add(root.Duration)
+		lastEnd := lastStep.StartTime.Add(lastStep.Duration)
+		if lastEnd.After(rootEnd) {
+			t.Fatalf("root span should end after step D: D ends %v, root ends %v", lastEnd, rootEnd)
 		}
 	}
 }
@@ -128,6 +143,17 @@ func assertStartsBefore(t *testing.T, earlierName string, earlierStart time.Time
 	}
 	if !earlierStart.Before(laterStart) {
 		t.Fatalf("expected %q to start before %q: %v vs %v", earlierName, laterName, earlierStart, laterStart)
+	}
+}
+
+func assertEndsBeforeStart(t *testing.T, earlier integrationSpanRecord, later integrationSpanRecord) {
+	t.Helper()
+	if earlier.StartTime.IsZero() || later.StartTime.IsZero() || earlier.Duration <= 0 {
+		return
+	}
+	earlierEnd := earlier.StartTime.Add(earlier.Duration)
+	if !earlierEnd.Before(later.StartTime) && !earlierEnd.Equal(later.StartTime) {
+		t.Fatalf("expected %q to finish before %q starts: end=%v start=%v", earlier.Name, later.Name, earlierEnd, later.StartTime)
 	}
 }
 
