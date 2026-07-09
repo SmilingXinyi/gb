@@ -28,7 +28,7 @@ func TestEncodeAxiomSpanEvent(t *testing.T) {
 		t.Fatalf("decode axiom payload: %v", err)
 	}
 
-	if axiomEvent["_time"] != endTime.UTC().Format(time.RFC3339Nano) {
+	if axiomEvent["_time"] != startTime.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("_time = %v", axiomEvent["_time"])
 	}
 	if axiomEvent["trace_id"] != "0123456789abcdef0123456789abcdef" {
@@ -43,7 +43,7 @@ func TestEncodeAxiomSpanEvent(t *testing.T) {
 	if axiomEvent["kind"] != "server" {
 		t.Fatalf("kind = %v", axiomEvent["kind"])
 	}
-	if axiomEvent["duration"] != "120ms" {
+	if axiomEvent["duration"] != float64((120 * time.Millisecond).Nanoseconds()) && axiomEvent["duration"] != (120 * time.Millisecond).Nanoseconds() {
 		t.Fatalf("duration = %v", axiomEvent["duration"])
 	}
 	if axiomEvent["service.name"] != "demo-app" {
@@ -81,23 +81,5 @@ func TestEncodeAxiomSpanEventChild(t *testing.T) {
 	}
 	if axiomEvent["kind"] != "internal" {
 		t.Fatalf("kind = %v", axiomEvent["kind"])
-	}
-}
-
-func TestFormatAxiomDuration(t *testing.T) {
-	testCases := []struct {
-		duration time.Duration
-		want     string
-	}{
-		{500 * time.Nanosecond, "500ns"},
-		{750 * time.Microsecond, "750us"},
-		{120 * time.Millisecond, "120ms"},
-		{1500 * time.Millisecond, "1.500s"},
-	}
-
-	for _, testCase := range testCases {
-		if got := formatAxiomDuration(testCase.duration); got != testCase.want {
-			t.Fatalf("formatAxiomDuration(%v) = %q, want %q", testCase.duration, got, testCase.want)
-		}
 	}
 }

@@ -16,12 +16,12 @@ func EncodeAxiomSpanEvent(event SpanEvent) ([]byte, error) {
 	}
 
 	axiomEvent := map[string]any{
-		"_time":       event.EndTime.UTC().Format(time.RFC3339Nano),
+		"_time":       event.StartTime.UTC().Format(time.RFC3339Nano),
 		"trace_id":    event.TraceID,
 		"span_id":     event.SpanID,
 		"name":        event.Name,
 		"kind":        normalizeAxiomSpanKind(event.SpanKind),
-		"duration":    formatAxiomDuration(duration),
+		"duration":    duration.Nanoseconds(),
 		"error":       false,
 		"status.code": "OK",
 	}
@@ -53,22 +53,4 @@ func normalizeAxiomSpanKind(spanKind string) string {
 	default:
 		return "internal"
 	}
-}
-
-// formatAxiomDuration renders a Go duration as an Axiom timespan string.
-func formatAxiomDuration(duration time.Duration) string {
-	if duration < time.Microsecond {
-		return fmt.Sprintf("%dns", duration.Nanoseconds())
-	}
-	if duration < time.Millisecond {
-		return fmt.Sprintf("%dus", duration.Microseconds())
-	}
-	if duration < time.Second {
-		return fmt.Sprintf("%dms", duration.Milliseconds())
-	}
-	if duration < time.Minute {
-		seconds := float64(duration) / float64(time.Second)
-		return fmt.Sprintf("%.3fs", seconds)
-	}
-	return duration.String()
 }

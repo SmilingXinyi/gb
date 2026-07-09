@@ -221,7 +221,7 @@ func parseAxiomLegacyQuery(body []byte) ([]integrationSpanRecord, error) {
 			SpanID:       decodeAxiomString(match.Data["span_id"]),
 			ParentSpanID: decodeAxiomString(match.Data["parent_span_id"]),
 			StartTime:    startTime,
-			Duration:     parseAxiomDuration(decodeAxiomString(match.Data["duration"])),
+			Duration:     parseAxiomDurationRaw(match.Data["duration"]),
 		}
 		if span.Name == "" && span.TraceID == "" {
 			continue
@@ -240,6 +240,21 @@ func decodeAxiomString(raw json.RawMessage) string {
 		return value
 	}
 	return strings.Trim(string(raw), `"`)
+}
+
+func parseAxiomDurationRaw(raw json.RawMessage) time.Duration {
+	if len(raw) == 0 {
+		return 0
+	}
+	var nanoseconds int64
+	if err := json.Unmarshal(raw, &nanoseconds); err == nil {
+		return time.Duration(nanoseconds)
+	}
+	var nanosecondsFloat float64
+	if err := json.Unmarshal(raw, &nanosecondsFloat); err == nil {
+		return time.Duration(nanosecondsFloat)
+	}
+	return parseAxiomDuration(decodeAxiomString(raw))
 }
 
 func parseAxiomDuration(value string) time.Duration {
