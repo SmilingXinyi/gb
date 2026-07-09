@@ -7,21 +7,19 @@ import (
 	"time"
 )
 
-// EncodeAxiomSpanEvent serializes a span into an Axiom-compatible trace event.
-// The payload matches fields expected by the OpenTelemetry Traces dashboard and Vector axiom sink.
+// Axiom encodes span timestamps using OpenTelemetry conventions:
+//   - _time: span start timestamp in UTC RFC3339Nano
+//   - duration: elapsed time as an integer number of nanoseconds (not milliseconds)
+//
+// Axiom UI may display durations in milliseconds, but ingest expects nanoseconds.
 func EncodeAxiomSpanEvent(event SpanEvent) ([]byte, error) {
-	duration := event.EndTime.Sub(event.StartTime)
-	if duration < 0 {
-		duration = 0
-	}
-
 	axiomEvent := map[string]any{
-		"_time":       event.StartTime.UTC().Format(time.RFC3339Nano),
+		"_time":       formatAxiomEventTime(event.StartTime),
 		"trace_id":    event.TraceID,
 		"span_id":     event.SpanID,
 		"name":        event.Name,
 		"kind":        normalizeAxiomSpanKind(event.SpanKind),
-		"duration":    duration.Nanoseconds(),
+		"duration":    axiomDurationNanoseconds(event.StartTime, event.EndTime),
 		"error":       event.HasError,
 		"status.code": axiomStatusCode(event),
 	}
@@ -40,6 +38,20 @@ func EncodeAxiomSpanEvent(event SpanEvent) ([]byte, error) {
 		return nil, fmt.Errorf("marshal axiom span: %w", err)
 	}
 	return payload, nil
+}
+
+// formatAxiomEventTime renders the span start time for Axiom ingest.
+func formatAxiomEventTime(startTime time.Time) string {
+	return startTime.UTC().Format(time.RFC3339Nano)
+}
+
+// axiomDurationNanoseconds converts span elapsed time to Axiom's nanosecond integer format.
+func axiomDurationNanoseconds(startTime, endTime time.Time) int64 {
+	duration := endTime.Sub(startTime)
+	if duration < 0 {
+		return 0
+	}
+	return duration.Nanoseconds()
 }
 
 // axiomStatusCode maps span status to an OpenTelemetry-style status code.

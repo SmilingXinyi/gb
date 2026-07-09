@@ -20,6 +20,7 @@ func (ClefEncoder) Encode(event SpanEvent) ([]byte, error) {
 }
 
 // AxiomEncoder encodes spans as Axiom OpenTelemetry-compatible NDJSON events.
+// Duration is always emitted in nanoseconds regardless of how callers measure spans in Go code.
 type AxiomEncoder struct{}
 
 // Encode serializes a span into an Axiom trace event JSON line.
