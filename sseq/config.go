@@ -29,8 +29,8 @@ const (
 
 // Config defines span delivery settings.
 type Config struct {
-	// Provider selects the delivery backend. When empty, HTTP is used if Endpoint is set,
-	// otherwise file is used when File.Filename is set, otherwise Axiom when configured.
+	// Provider selects the delivery backend. When empty, auto-detection prefers file,
+	// then Axiom, then HTTP based on which backend fields are populated.
 	Provider Provider
 	// Application is added to every span as the Application property or service.name.
 	Application string

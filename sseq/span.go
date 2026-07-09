@@ -3,7 +3,7 @@ package sseq
 import (
 	"context"
 	"fmt"
-	"os"
+	"net/http"
 	"sync"
 	"time"
 
@@ -22,7 +22,7 @@ var (
 )
 
 // Setup initializes the global span sender for the configured provider.
-func Setup(config Config) {
+func Setup(config Config) error {
 	setupMutex.Lock()
 	defer setupMutex.Unlock()
 
@@ -31,8 +31,19 @@ func Setup(config Config) {
 		globalSender = nil
 	}
 
+	if err := validateConfig(config); err != nil {
+		return err
+	}
+
+	builtSender, err := buildSender(config)
+	if err != nil {
+		return err
+	}
+
 	globalConfig = config
-	globalSender = buildSender(config)
+	globalSender = builtSender
+	warnIgnoredProviderConfigs(config)
+	return nil
 }
 
 // Shutdown flushes and closes the global span sender.
@@ -47,7 +58,7 @@ func Shutdown() {
 }
 
 // buildSender creates the configured span sender. The caller must hold setupMutex.
-func buildSender(config Config) *sender.Sender {
+func buildSender(config Config) (*sender.Sender, error) {
 	provider := resolveProvider(config)
 	switch provider {
 	case ProviderHTTP:
@@ -58,20 +69,14 @@ func buildSender(config Config) *sender.Sender {
 		if httpConfig.APIKey == "" {
 			httpConfig.APIKey = config.APIKey
 		}
-		if httpConfig.Endpoint == "" {
-			return nil
-		}
 		return sender.NewHTTP(sender.HTTPBatchConfig{
 			Endpoint:      httpConfig.Endpoint,
 			APIKey:        httpConfig.APIKey,
 			BatchSize:     config.BatchSize,
 			FlushInterval: config.FlushInterval,
-		})
+		}), nil
 	case ProviderFile:
-		if config.File.Filename == "" {
-			return nil
-		}
-		fileSender, err := sender.NewFile(sender.FileBatchConfig{
+		return sender.NewFile(sender.FileBatchConfig{
 			File: sender.FileConfig{
 				Filename:   config.File.Filename,
 				MaxSize:    config.File.MaxSize,
@@ -83,16 +88,8 @@ func buildSender(config Config) *sender.Sender {
 			BatchSize:     config.BatchSize,
 			FlushInterval: config.FlushInterval,
 		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "sseq: create file provider: %v\n", err)
-			return nil
-		}
-		return fileSender
 	case ProviderAxiom:
-		if config.Axiom.Token == "" || config.Axiom.Dataset == "" {
-			return nil
-		}
-		axiomSender, err := sender.NewAxiom(sender.AxiomBatchConfig{
+		return sender.NewAxiom(sender.AxiomBatchConfig{
 			Axiom: sender.AxiomConfig{
 				Token:      config.Axiom.Token,
 				Dataset:    config.Axiom.Dataset,
@@ -103,13 +100,8 @@ func buildSender(config Config) *sender.Sender {
 			BatchSize:     config.BatchSize,
 			FlushInterval: config.FlushInterval,
 		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "sseq: create axiom provider: %v\n", err)
-			return nil
-		}
-		return axiomSender
 	default:
-		return nil
+		return nil, fmt.Errorf("sseq: unsupported provider %q", provider)
 	}
 }
 
@@ -134,7 +126,11 @@ func resolveProvider(config Config) Provider {
 func Do(ctx context.Context, name string, fn func(context.Context) error) error {
 	ctx, span := Start(ctx, name)
 	defer span.End()
-	return fn(ctx)
+	err := fn(ctx)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
 }
 
 // Start begins a new span and returns an updated context plus the span handle.
@@ -180,16 +176,19 @@ func Start(ctx context.Context, name string) (context.Context, *Span) {
 
 // Span represents one operation in a distributed trace.
 type Span struct {
-	name        string
-	application string
-	traceID     string
-	spanID      string
-	parentID    string
-	spanKind    string
-	startTime   time.Time
-	endTime     time.Time
-	ended       bool
-	sender      *sender.Sender
+	name           string
+	application    string
+	traceID        string
+	spanID         string
+	parentID       string
+	spanKind       string
+	startTime      time.Time
+	endTime        time.Time
+	ended          bool
+	sender         *sender.Sender
+	hasError       bool
+	statusMessage  string
+	httpStatusCode int
 }
 
 // End completes the span and sends it to the configured provider.
@@ -205,15 +204,41 @@ func (span *Span) End() {
 	}
 
 	_ = span.sender.Send(sender.SpanEvent{
-		Name:        span.name,
-		Application: span.application,
-		TraceID:     span.traceID,
-		SpanID:      span.spanID,
-		ParentID:    span.parentID,
-		SpanKind:    span.spanKind,
-		StartTime:   span.startTime,
-		EndTime:     span.endTime,
+		Name:           span.name,
+		Application:    span.application,
+		TraceID:        span.traceID,
+		SpanID:         span.spanID,
+		ParentID:       span.parentID,
+		SpanKind:       span.spanKind,
+		StartTime:      span.startTime,
+		EndTime:        span.endTime,
+		HasError:       span.hasError,
+		StatusMessage:  span.statusMessage,
+		HTTPStatusCode: span.httpStatusCode,
 	})
+}
+
+// RecordError marks the span as failed with the given error message.
+func (span *Span) RecordError(err error) {
+	if span == nil || err == nil {
+		return
+	}
+	span.hasError = true
+	span.statusMessage = err.Error()
+}
+
+// SetHTTPStatusCode records the HTTP response status for server spans.
+func (span *Span) SetHTTPStatusCode(statusCode int) {
+	if span == nil || statusCode <= 0 {
+		return
+	}
+	span.httpStatusCode = statusCode
+	if statusCode >= http.StatusInternalServerError {
+		span.hasError = true
+		if span.statusMessage == "" {
+			span.statusMessage = fmt.Sprintf("HTTP %d", statusCode)
+		}
+	}
 }
 
 // TraceID returns the trace id associated with this span.

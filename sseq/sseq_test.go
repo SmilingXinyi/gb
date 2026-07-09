@@ -29,12 +29,14 @@ func TestDoSpanHierarchy(t *testing.T) {
 	}))
 	defer server.Close()
 
-	Setup(Config{
+	if err := Setup(Config{
 		Endpoint:      server.URL,
 		Application:   "unit-test",
 		BatchSize:     1,
 		FlushInterval: time.Hour,
-	})
+	}); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
 	t.Cleanup(Shutdown)
 
 	err := Do(context.Background(), "root", func(ctx context.Context) error {
@@ -70,11 +72,13 @@ func TestStartEndTraceIDStable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	Setup(Config{
+	if err := Setup(Config{
 		Endpoint:      server.URL,
 		BatchSize:     1,
 		FlushInterval: time.Hour,
-	})
+	}); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
 	t.Cleanup(Shutdown)
 
 	rootContext, rootSpan := Start(context.Background(), "root")

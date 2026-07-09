@@ -14,7 +14,7 @@ func TestSetupFileProvider(t *testing.T) {
 	tempDir := t.TempDir()
 	filename := filepath.Join(tempDir, "spans.clef")
 
-	Setup(Config{
+	if err := Setup(Config{
 		Provider:      ProviderFile,
 		Application:   "unit-test",
 		BatchSize:     1,
@@ -22,7 +22,9 @@ func TestSetupFileProvider(t *testing.T) {
 		File: FileConfig{
 			Filename: filename,
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
 	t.Cleanup(Shutdown)
 
 	err := Do(context.Background(), "root", func(ctx context.Context) error {

@@ -9,7 +9,9 @@ import (
 )
 
 func main() {
-	sseq.Setup(sseq.DefaultConfig())
+	if err := sseq.Setup(sseq.DefaultConfig()); err != nil {
+		panic(err)
+	}
 	defer sseq.Shutdown()
 
 	err := sseq.Do(context.Background(), "HTTP GET /api/users", func(ctx context.Context) error {

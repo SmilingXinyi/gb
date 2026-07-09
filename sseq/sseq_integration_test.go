@@ -32,12 +32,14 @@ func TestIntegrationSpanTreeWithSeqDocker(t *testing.T) {
 		t.Skip("Seq docker service is not available")
 	}
 
-	sseq.Setup(sseq.Config{
+	if err := sseq.Setup(sseq.Config{
 		Endpoint:      seqIngestEndpoint,
 		Application:   integrationApplication,
 		BatchSize:     1,
 		FlushInterval: 100 * time.Millisecond,
-	})
+	}); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
 	t.Cleanup(sseq.Shutdown)
 
 	traceID, err := runIntegrationSpanScenario()

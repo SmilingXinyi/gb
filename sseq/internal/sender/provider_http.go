@@ -3,6 +3,7 @@ package sender
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 )
@@ -54,6 +55,7 @@ func (provider *HTTPProvider) WritePayload(payload []byte) {
 		return
 	}
 	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
 
 	if response.StatusCode != http.StatusCreated {
 		fmt.Fprintf(os.Stderr, "sseq: unexpected status %d\n", response.StatusCode)
