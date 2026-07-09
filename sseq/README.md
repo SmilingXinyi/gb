@@ -91,6 +91,31 @@ http.Handle("/api/", sseqmiddleware.HTTP(apiHandler))
 
 Records each request as a root span and attaches the HTTP status code. Responses with status `>= 500` are marked as span errors.
 
+## Async tasks (task-bus)
+
+When work continues in another goroutine or process, resume the producer trace before creating spans:
+
+```go
+// Producer: capture identifiers before enqueueing.
+err := sseq.Do(ctx, "HTTP POST /api/orders", func(requestContext context.Context) error {
+    traceID, parentSpanID, ok := sseq.TraceFromContext(requestContext)
+    if !ok {
+        return nil
+    }
+    return taskBus.Publish(taskBus.Message{
+        Payload:      orderID,
+        TraceID:      traceID,
+        ParentSpanID: parentSpanID,
+    })
+})
+
+// Consumer: continue the same trace tree.
+workerContext := sseq.ResumeTrace(context.Background(), message.TraceID, message.ParentSpanID)
+return sseq.Do(workerContext, "Process order async", func(context.Context) error {
+    return processOrder(message.Payload)
+})
+```
+
 ## Provider selection
 
 When `Provider` is empty, auto-detection uses the first match in this order:
