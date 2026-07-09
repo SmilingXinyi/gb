@@ -22,8 +22,11 @@ func EncodeAxiomSpanEvent(event SpanEvent) ([]byte, error) {
 		"name":        event.Name,
 		"kind":        normalizeAxiomSpanKind(event.SpanKind),
 		"duration":    duration.Nanoseconds(),
-		"error":       false,
-		"status.code": "OK",
+		"error":       event.HasError,
+		"status.code": axiomStatusCode(event),
+	}
+	if event.StatusMessage != "" {
+		axiomEvent["status.message"] = event.StatusMessage
 	}
 	if event.ParentID != "" {
 		axiomEvent["parent_span_id"] = event.ParentID
@@ -39,7 +42,14 @@ func EncodeAxiomSpanEvent(event SpanEvent) ([]byte, error) {
 	return payload, nil
 }
 
-// normalizeAxiomSpanKind maps span kinds to OpenTelemetry semantic values.
+// axiomStatusCode maps span status to an OpenTelemetry-style status code.
+func axiomStatusCode(event SpanEvent) string {
+	if event.HasError {
+		return "ERROR"
+	}
+	return "OK"
+}
+
 func normalizeAxiomSpanKind(spanKind string) string {
 	switch strings.ToLower(spanKind) {
 	case "server":

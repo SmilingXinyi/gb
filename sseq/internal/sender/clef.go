@@ -8,14 +8,17 @@ import (
 
 // SpanEvent describes a completed span to send to Seq as a CLEF event.
 type SpanEvent struct {
-	Name        string
-	Application string
-	TraceID     string
-	SpanID      string
-	ParentID    string
-	SpanKind    string
-	StartTime   time.Time
-	EndTime     time.Time
+	Name           string
+	Application    string
+	TraceID        string
+	SpanID         string
+	ParentID       string
+	SpanKind       string
+	StartTime      time.Time
+	EndTime        time.Time
+	HasError       bool
+	StatusMessage  string
+	HTTPStatusCode int
 }
 
 // EncodeSpanEvent serializes a span into a Seq-compatible CLEF JSON line.
@@ -26,7 +29,7 @@ func EncodeSpanEvent(event SpanEvent) ([]byte, error) {
 		"@tr": event.TraceID,
 		"@sp": event.SpanID,
 		"@mt": event.Name,
-		"@l":  "Information",
+		"@l":  clefLevel(event),
 		"@sk": event.SpanKind,
 	}
 	if event.ParentID != "" {
@@ -35,10 +38,24 @@ func EncodeSpanEvent(event SpanEvent) ([]byte, error) {
 	if event.Application != "" {
 		clefEvent["Application"] = event.Application
 	}
+	if event.StatusMessage != "" {
+		clefEvent["ErrorMessage"] = event.StatusMessage
+	}
+	if event.HTTPStatusCode > 0 {
+		clefEvent["StatusCode"] = event.HTTPStatusCode
+	}
 
 	payload, err := json.Marshal(clefEvent)
 	if err != nil {
 		return nil, fmt.Errorf("marshal clef span: %w", err)
 	}
 	return payload, nil
+}
+
+// clefLevel maps span status to a Seq log level.
+func clefLevel(event SpanEvent) string {
+	if event.HasError {
+		return "Error"
+	}
+	return "Information"
 }

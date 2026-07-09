@@ -28,7 +28,7 @@ func TestSetupAxiomProvider(t *testing.T) {
 	}))
 	defer server.Close()
 
-	Setup(Config{
+	if err := Setup(Config{
 		Provider:      ProviderAxiom,
 		Application:   "unit-test",
 		BatchSize:     1,
@@ -38,7 +38,9 @@ func TestSetupAxiomProvider(t *testing.T) {
 			Dataset:  "otel-traces",
 			Endpoint: server.URL,
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
 	t.Cleanup(Shutdown)
 
 	err := Do(context.Background(), "root", func(ctx context.Context) error {
@@ -70,7 +72,7 @@ func TestSetupAxiomVectorFileFormat(t *testing.T) {
 	tempDir := t.TempDir()
 	filename := filepath.Join(tempDir, "spans.ndjson")
 
-	Setup(Config{
+	if err := Setup(Config{
 		Provider:      ProviderFile,
 		Application:   "vector-app",
 		BatchSize:     1,
@@ -79,7 +81,9 @@ func TestSetupAxiomVectorFileFormat(t *testing.T) {
 			Filename: filename,
 			Format:   FileFormatAxiom,
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
 	t.Cleanup(Shutdown)
 
 	err := Do(context.Background(), "root", func(ctx context.Context) error {

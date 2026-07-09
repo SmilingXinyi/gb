@@ -180,7 +180,7 @@ func TestIntegrationSpanScenarioClef(t *testing.T) {
 	tempDir := t.TempDir()
 	filename := filepath.Join(tempDir, "integration-spans.clef")
 
-	sseq.Setup(sseq.Config{
+	if err := sseq.Setup(sseq.Config{
 		Provider:      sseq.ProviderFile,
 		Application:   integrationApplication,
 		BatchSize:     1,
@@ -188,7 +188,9 @@ func TestIntegrationSpanScenarioClef(t *testing.T) {
 		File: sseq.FileConfig{
 			Filename: filename,
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
 	t.Cleanup(sseq.Shutdown)
 
 	traceID, err := runIntegrationSpanScenario()

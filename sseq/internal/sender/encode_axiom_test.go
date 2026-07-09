@@ -83,3 +83,35 @@ func TestEncodeAxiomSpanEventChild(t *testing.T) {
 		t.Fatalf("kind = %v", axiomEvent["kind"])
 	}
 }
+
+func TestEncodeAxiomSpanEventError(t *testing.T) {
+	startTime := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	endTime := startTime.Add(30 * time.Millisecond)
+
+	payload, err := EncodeAxiomSpanEvent(SpanEvent{
+		Name:          "charge payment",
+		TraceID:       "0123456789abcdef0123456789abcdef",
+		SpanID:        "0123456789abc001",
+		StartTime:     startTime,
+		EndTime:       endTime,
+		HasError:      true,
+		StatusMessage: "payment failed",
+	})
+	if err != nil {
+		t.Fatalf("EncodeAxiomSpanEvent() error = %v", err)
+	}
+
+	var axiomEvent map[string]any
+	if err := json.Unmarshal(payload, &axiomEvent); err != nil {
+		t.Fatalf("decode axiom payload: %v", err)
+	}
+	if axiomEvent["error"] != true {
+		t.Fatalf("error = %v", axiomEvent["error"])
+	}
+	if axiomEvent["status.code"] != "ERROR" {
+		t.Fatalf("status.code = %v", axiomEvent["status.code"])
+	}
+	if axiomEvent["status.message"] != "payment failed" {
+		t.Fatalf("status.message = %v", axiomEvent["status.message"])
+	}
+}

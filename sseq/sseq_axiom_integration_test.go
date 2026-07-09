@@ -38,7 +38,7 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 		Timeout:   30 * time.Second,
 	}
 
-	sseq.Setup(sseq.Config{
+	if err := sseq.Setup(sseq.Config{
 		Provider:      sseq.ProviderAxiom,
 		Application:   integrationApplication,
 		BatchSize:     1,
@@ -49,7 +49,9 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 			Domain:     "api.axiom.co",
 			HTTPClient: httpClient,
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
 	t.Cleanup(sseq.Shutdown)
 
 	traceID, err := runIntegrationSpanScenario()

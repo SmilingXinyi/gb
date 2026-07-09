@@ -3,6 +3,7 @@ package sender
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -89,6 +90,7 @@ func (provider *AxiomProvider) WritePayload(payload []byte) {
 		return
 	}
 	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		fmt.Fprintf(os.Stderr, "sseq: axiom unexpected status %d\n", response.StatusCode)
