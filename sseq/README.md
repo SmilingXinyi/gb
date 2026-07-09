@@ -56,6 +56,21 @@ if err := sseq.Setup(sseq.Config{
 defer sseq.Shutdown()
 ```
 
+### Axiom time fields
+
+`sseq` derives span timing from `Start`/`End` automatically. The Axiom encoder emits:
+
+| Field | Meaning | Ingest format |
+|-------|---------|---------------|
+| `_time` | Span **start** time | UTC RFC3339 (`2026-07-09T12:00:00.123456789Z`) |
+| `duration` | Elapsed time | **Integer nanoseconds** (30 ms → `30000000`) |
+
+Axiom UI may display milliseconds in waterfall views, but ingest and APL queries use nanoseconds:
+
+```apl
+| extend duration_ms = duration / 1000000.0
+```
+
 ## File provider + Vector
 
 ```go
