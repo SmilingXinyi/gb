@@ -1,20 +1,17 @@
 package trace_id
 
 import (
+	"strings"
+
 	"github.com/google/uuid"
 )
 
-// New generates a new time-ordered UUID v7 trace ID.
-// UUID v7 embeds a timestamp component, making it suitable for database keys and distributed tracing.
-func New() (ID, error) {
-	generated, err := uuid.NewV7()
-	if err != nil {
-		return ID{}, err
-	}
-	return ID(generated), nil
+// New generates a new UUID v7.
+func New() (uuid.UUID, error) {
+	return uuid.NewV7()
 }
 
-// NewString generates a new trace ID and returns its canonical UUID string representation.
+// NewString generates a new UUID v7 and returns it as a string with dashes.
 func NewString() (string, error) {
 	generated, err := New()
 	if err != nil {
@@ -23,18 +20,17 @@ func NewString() (string, error) {
 	return generated.String(), nil
 }
 
-// NewHex generates a new trace ID and returns a 32-character lowercase hexadecimal string.
+// NewHex generates a new UUID v7 and returns a 32-character hexadecimal string without dashes.
 func NewHex() (string, error) {
 	generated, err := New()
 	if err != nil {
 		return "", err
 	}
-	return generated.Hex(), nil
+	return strings.ReplaceAll(generated.String(), "-", ""), nil
 }
 
-// MustNew generates a new trace ID and panics when generation fails.
-// Use New when a fallback strategy is required, for example in request hot paths.
-func MustNew() ID {
+// MustNew generates a new UUID v7 and panics if an error occurs.
+func MustNew() uuid.UUID {
 	generated, err := New()
 	if err != nil {
 		panic(err)
@@ -42,12 +38,20 @@ func MustNew() ID {
 	return generated
 }
 
-// MustNewString generates a new trace ID string and panics when generation fails.
+// MustNewString generates a new UUID v7 string with dashes and panics if an error occurs.
 func MustNewString() string {
-	return MustNew().String()
+	generated, err := NewString()
+	if err != nil {
+		panic(err)
+	}
+	return generated
 }
 
-// MustNewHex generates a new hexadecimal trace ID and panics when generation fails.
+// MustNewHex generates a new UUID v7 hex string without dashes and panics if an error occurs.
 func MustNewHex() string {
-	return MustNew().Hex()
+	generated, err := NewHex()
+	if err != nil {
+		panic(err)
+	}
+	return generated
 }
