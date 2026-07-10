@@ -10,7 +10,7 @@ import (
 
 // newTraceID generates a Seq-compatible 32-character hexadecimal trace id.
 func newTraceID() (string, error) {
-	return trace_id.NewHex()
+	return trace_id.New()
 }
 
 // newSpanID generates a Seq-compatible 16-character hexadecimal span id.
