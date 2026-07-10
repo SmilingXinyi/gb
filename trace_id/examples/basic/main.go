@@ -12,5 +12,6 @@ func main() {
 		fmt.Printf("Failed to generate trace ID: %v\n", err)
 		return
 	}
-	fmt.Printf("Trace ID: %s\n", traceID)
+	fmt.Printf("With dashes: %s\n", traceID)
+	fmt.Printf("Without dashes: %s\n", trace_id.RemoveDashes(traceID))
 }
