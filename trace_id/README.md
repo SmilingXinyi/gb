@@ -5,7 +5,9 @@
 ## Features
 
 - **Time-ordered IDs**: UUID v7 provides natural sort order by creation time.
-- **Simple API**: Four functions covering error-returning and panic variants.
+- **Multiple formats**: Canonical UUID strings and 32-character lowercase hex for Seq and W3C trace contexts.
+- **Parse and validate**: Accept UUID strings or 32-hex input for upstream trace propagation.
+- **Simple API**: Typed `ID` value plus error-returning and panic variants.
 - **Zero configuration**: No setup required; call and use immediately.
 
 ## Installation
@@ -26,12 +28,13 @@ import (
 )
 
 func main() {
-	// Returns uuid.UUID
+	// Returns trace_id.ID
 	id, err := trace_id.New()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(id.String())
+	fmt.Println(id.String()) // canonical UUID
+	fmt.Println(id.Hex())    // 32-char hex for Seq / W3C
 
 	// Returns string directly
 	idStr, err := trace_id.NewString()
@@ -40,8 +43,21 @@ func main() {
 	}
 	fmt.Println(idStr)
 
+	hexID, err := trace_id.NewHex()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(hexID)
+
+	// Parse upstream trace IDs
+	parsed, err := trace_id.Parse(hexID)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(parsed.String())
+
 	// Panic on error (for init or hot paths where failure is unexpected)
-	fmt.Println(trace_id.MustNewString())
+	fmt.Println(trace_id.MustNewHex())
 }
 ```
 
@@ -49,10 +65,14 @@ func main() {
 
 | Function | Returns | Behavior |
 | :--- | :--- | :--- |
-| `New()` | `uuid.UUID, error` | Generate a new trace ID |
-| `NewString()` | `string, error` | Generate a new trace ID as a string |
-| `MustNew()` | `uuid.UUID` | Generate or panic |
-| `MustNewString()` | `string` | Generate string or panic |
+| `New()` | `ID, error` | Generate a new trace ID |
+| `NewString()` | `string, error` | Generate a canonical UUID string |
+| `NewHex()` | `string, error` | Generate a 32-character lowercase hex string |
+| `MustNew()` | `ID` | Generate or panic |
+| `MustNewString()` | `string` | Generate UUID string or panic |
+| `MustNewHex()` | `string` | Generate hex string or panic |
+| `Parse(raw)` | `ID, error` | Parse UUID or 32-hex input |
+| `IsValid(raw)` | `bool` | Validate UUID or 32-hex input |
 
 ## Example
 
