@@ -1,3 +1,5 @@
+github.com/SmilingXinyi/gb/trace_id v1.0.0 h1:fQZDrkOvzZ1wPminedbCxRCQDvI9DVUTyqdanRdlteY=
+github.com/SmilingXinyi/gb/trace_id v1.0.0/go.mod h1:Me70UyeQXT1tuLmunTWXhy5o5tmRD0HBI9BBpjyD/ko=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
