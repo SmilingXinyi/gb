@@ -4,18 +4,17 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"strings"
 
 	"github.com/SmilingXinyi/gb/trace_id"
 )
 
 // newTraceID generates a Seq-compatible 32-character hexadecimal trace id.
 func newTraceID() (string, error) {
-	traceID, err := trace_id.NewString()
+	traceID, err := trace_id.New()
 	if err != nil {
 		return "", err
 	}
-	return strings.ReplaceAll(traceID, "-", ""), nil
+	return trace_id.RemoveDashes(traceID), nil
 }
 
 // newSpanID generates a Seq-compatible 16-character hexadecimal span id.
