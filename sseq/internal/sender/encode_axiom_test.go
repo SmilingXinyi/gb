@@ -161,6 +161,87 @@ func TestEncodeAxiomSpanEventError(t *testing.T) {
 	}
 }
 
+func TestEncodeAxiomSpanEventWithAttachedEvents(t *testing.T) {
+	startTime := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	eventTime := startTime.Add(5 * time.Millisecond)
+	endTime := startTime.Add(20 * time.Millisecond)
+
+	payload, err := EncodeAxiomSpanEvent(SpanEvent{
+		Name:      "HTTP GET /api/orders",
+		TraceID:   "0123456789abcdef0123456789abcdef",
+		SpanID:    "0123456789abc000",
+		SpanKind:  "Server",
+		StartTime: startTime,
+		EndTime:   endTime,
+		Events: []TimedEvent{
+			{
+				Name: "cache.miss",
+				Time: eventTime,
+				Attributes: map[string]string{
+					"key": "orders",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("EncodeAxiomSpanEvent() error = %v", err)
+	}
+
+	var axiomEvent map[string]any
+	if err := json.Unmarshal(payload, &axiomEvent); err != nil {
+		t.Fatalf("decode axiom payload: %v", err)
+	}
+
+	rawEvents, ok := axiomEvent["events"].([]any)
+	if !ok || len(rawEvents) != 1 {
+		t.Fatalf("events = %#v", axiomEvent["events"])
+	}
+	eventItem, ok := rawEvents[0].(map[string]any)
+	if !ok {
+		t.Fatalf("event item type = %T", rawEvents[0])
+	}
+	if eventItem["name"] != "cache.miss" {
+		t.Fatalf("event name = %v", eventItem["name"])
+	}
+	if eventItem["timestamp"] != eventTime.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("event timestamp = %v", eventItem["timestamp"])
+	}
+}
+
+func TestEncodeAxiomPointEvent(t *testing.T) {
+	eventTime := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+
+	payload, err := EncodeAxiomSpanEvent(SpanEvent{
+		Name:       "order.paid",
+		TraceID:    "0123456789abcdef0123456789abcdef",
+		SpanID:     "0123456789abc999",
+		ParentID:   "0123456789abc000",
+		EndTime:    eventTime,
+		PointEvent: true,
+		Attributes: map[string]string{"amount": "42"},
+	})
+	if err != nil {
+		t.Fatalf("EncodeAxiomSpanEvent() error = %v", err)
+	}
+
+	var axiomEvent map[string]any
+	if err := json.Unmarshal(payload, &axiomEvent); err != nil {
+		t.Fatalf("decode axiom payload: %v", err)
+	}
+	if axiomEvent["duration"] != float64(0) {
+		t.Fatalf("duration = %v", axiomEvent["duration"])
+	}
+	if axiomEvent["sseq.event"] != true {
+		t.Fatalf("sseq.event = %v", axiomEvent["sseq.event"])
+	}
+	if axiomEvent["parent_span_id"] != "0123456789abc000" {
+		t.Fatalf("parent_span_id = %v", axiomEvent["parent_span_id"])
+	}
+	if axiomEvent["span_id"] != "0123456789abc999" {
+		t.Fatalf("span_id = %v", axiomEvent["span_id"])
+	}
+}
+
 func assertAxiomDurationNanoseconds(t *testing.T, rawValue any, want time.Duration) {
 	t.Helper()
 

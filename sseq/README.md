@@ -13,6 +13,7 @@ It does not write general application logs to console or slog.
 ## Features
 
 - Span tree ingestion with parent/child relationships
+- Point events: `span.AddEvent` (on a span) and `sseq.Event` (standalone)
 - Simple API: `Do`, `Start`/`End`, `RecordError`, and HTTP middleware
 - HTTP middleware records response status codes
 - Startup validation via `Setup() error`
@@ -69,6 +70,28 @@ Axiom UI may display milliseconds in waterfall views, but ingest and APL queries
 
 ```apl
 | extend duration_ms = duration / 1000000.0
+```
+
+## Point events
+
+`sseq` supports two event styles:
+
+| API | Meaning | Seq | Axiom |
+|-----|---------|-----|-------|
+| `span.AddEvent(name, attrs)` | Annotation on the current span | Extra CLEF log with same `@tr`/`@sp`, **no `@st`** | Nested in span `events[]` |
+| `sseq.Event(ctx, name, attrs)` | Standalone instant on the active trace | Correlated CLEF log (**no `@st`**) | Zero-duration record (`sseq.event=true`) |
+
+This matches Seq's model: `@tr` puts a record in a trace; `@st` makes it a span. Without `@st` it is a correlated log/event (same approach SerilogTracing uses for `Activity.Events` via `ActivityEvents.AsLogEvents`).
+
+```go
+err := sseq.Do(ctx, "HTTP GET /api/orders", func(ctx context.Context) error {
+    ctx, span := sseq.Start(ctx, "Load orders")
+    defer span.End()
+
+    span.AddEvent("cache.miss", map[string]string{"key": "orders"})
+    sseq.Event(ctx, "orders.loaded", map[string]string{"count": "12"})
+    return nil
+})
 ```
 
 ## File provider + Vector

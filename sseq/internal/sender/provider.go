@@ -1,6 +1,8 @@
 package sender
 
 // PayloadEncoder serializes span events for a specific delivery backend.
+// Returned payloads may contain multiple newline-separated records for backends
+// that emit span-attached events as additional lines (for example Seq CLEF).
 type PayloadEncoder interface {
 	Encode(event SpanEvent) ([]byte, error)
 }
@@ -14,7 +16,7 @@ type PayloadWriter interface {
 // ClefEncoder encodes spans as Seq-compatible CLEF JSON lines.
 type ClefEncoder struct{}
 
-// Encode serializes a span into a CLEF JSON line.
+// Encode serializes a span and attached events into CLEF JSON line(s).
 func (ClefEncoder) Encode(event SpanEvent) ([]byte, error) {
 	return EncodeSpanEvent(event)
 }
