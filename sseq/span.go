@@ -133,6 +133,51 @@ func Do(ctx context.Context, name string, fn func(context.Context) error) error 
 	return err
 }
 
+// Event emits a standalone point-in-time event on the active trace.
+//
+// Backend mapping:
+//   - Seq: CLEF log with @tr/@sp and without @st (correlated log on the trace)
+//   - Axiom: zero-duration record linked via parent_span_id
+//
+// If ctx has no active span, Event is a no-op.
+func Event(ctx context.Context, name string, attributes map[string]string) {
+	if name == "" {
+		return
+	}
+
+	setupMutex.RLock()
+	currentConfig := globalConfig
+	currentSender := globalSender
+	setupMutex.RUnlock()
+
+	if currentSender == nil {
+		return
+	}
+
+	spanState, found := activeSpanContext(ctx)
+	if !found || spanState.traceID == "" {
+		return
+	}
+
+	eventTime := time.Now().UTC()
+	spanID, err := newSpanID()
+	if err != nil {
+		spanID = "0000000000000000"
+	}
+
+	_ = currentSender.Send(sender.SpanEvent{
+		Name:        name,
+		Application: currentConfig.Application,
+		TraceID:     spanState.traceID,
+		SpanID:      spanID,
+		ParentID:    spanState.spanID,
+		StartTime:   eventTime,
+		EndTime:     eventTime,
+		Attributes:  cloneAttributes(attributes),
+		PointEvent:  true,
+	})
+}
+
 // Start begins a new span and returns an updated context plus the span handle.
 func Start(ctx context.Context, name string) (context.Context, *Span) {
 	setupMutex.RLock()
@@ -189,6 +234,8 @@ type Span struct {
 	hasError       bool
 	statusMessage  string
 	httpStatusCode int
+	events         []sender.TimedEvent
+	eventsMutex    sync.Mutex
 }
 
 // End completes the span and sends it to the configured provider.
@@ -203,6 +250,10 @@ func (span *Span) End() {
 		return
 	}
 
+	span.eventsMutex.Lock()
+	attachedEvents := append([]sender.TimedEvent(nil), span.events...)
+	span.eventsMutex.Unlock()
+
 	_ = span.sender.Send(sender.SpanEvent{
 		Name:           span.name,
 		Application:    span.application,
@@ -215,6 +266,28 @@ func (span *Span) End() {
 		HasError:       span.hasError,
 		StatusMessage:  span.statusMessage,
 		HTTPStatusCode: span.httpStatusCode,
+		Events:         attachedEvents,
+	})
+}
+
+// AddEvent attaches a point-in-time event to this span.
+//
+// Backend mapping:
+//   - Axiom: included in the span's events[] array on End
+//   - Seq: emitted as a correlated CLEF log (same @tr/@sp, no @st) when the span ends
+//
+// This mirrors SerilogTracing's Activity.Events -> log events model for Seq.
+func (span *Span) AddEvent(name string, attributes map[string]string) {
+	if span == nil || span.ended || name == "" {
+		return
+	}
+
+	span.eventsMutex.Lock()
+	defer span.eventsMutex.Unlock()
+	span.events = append(span.events, sender.TimedEvent{
+		Name:       name,
+		Time:       time.Now().UTC(),
+		Attributes: cloneAttributes(attributes),
 	})
 }
 
@@ -255,6 +328,18 @@ func (span *Span) SpanID() string {
 		return ""
 	}
 	return span.spanID
+}
+
+// cloneAttributes copies attribute key/value pairs.
+func cloneAttributes(attributes map[string]string) map[string]string {
+	if len(attributes) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(attributes))
+	for key, value := range attributes {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // activeSpanContext reads span identifiers stored in the context.

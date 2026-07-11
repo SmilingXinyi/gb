@@ -136,12 +136,26 @@ func (sender *Sender) Send(event SpanEvent) error {
 
 	sender.buffer.Write(payload)
 	sender.buffer.WriteByte('\n')
-	sender.eventCount++
+	sender.eventCount += countEncodedRecords(payload)
 
 	if sender.eventCount >= sender.config.BatchSize {
 		sender.flushLocked()
 	}
 	return nil
+}
+
+// countEncodedRecords counts newline-delimited records in an encoded payload.
+func countEncodedRecords(payload []byte) int {
+	if len(payload) == 0 {
+		return 0
+	}
+	recordCount := 1
+	for _, character := range payload {
+		if character == '\n' {
+			recordCount++
+		}
+	}
+	return recordCount
 }
 
 // Close flushes buffered events, stops the background flush loop, and waits for in-flight deliveries.
