@@ -10,7 +10,7 @@ import (
 // Axiom encodes span timestamps using OpenTelemetry conventions:
 //   - _time: span start timestamp in UTC RFC3339Nano
 //   - duration: elapsed time as an integer number of nanoseconds (not milliseconds)
-//   - events: optional span-attached point events
+//   - events[].timestamp: Unix nanoseconds as an integer (Axiom Trace UI BigInt)
 //
 // Axiom UI may display durations in milliseconds, but ingest expects nanoseconds.
 func EncodeAxiomSpanEvent(event SpanEvent) ([]byte, error) {
@@ -127,12 +127,13 @@ func encodeAxiomPointEvent(event SpanEvent) ([]byte, error) {
 }
 
 // encodeAxiomTimedEvents converts attached span events into Axiom/OTel event objects.
+// Axiom Trace UI expects event timestamps as Unix nanoseconds (integer BigInt), not RFC3339 strings.
 func encodeAxiomTimedEvents(events []TimedEvent) []map[string]any {
 	encoded := make([]map[string]any, 0, len(events))
 	for _, timedEvent := range events {
 		item := map[string]any{
 			"name":      timedEvent.Name,
-			"timestamp": formatAxiomEventTime(timedEvent.Time),
+			"timestamp": timedEvent.Time.UTC().UnixNano(),
 		}
 		if len(timedEvent.Attributes) > 0 {
 			item["attributes"] = timedEvent.Attributes

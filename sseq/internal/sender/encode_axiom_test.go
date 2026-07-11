@@ -203,8 +203,9 @@ func TestEncodeAxiomSpanEventWithAttachedEvents(t *testing.T) {
 	if eventItem["name"] != "cache.miss" {
 		t.Fatalf("event name = %v", eventItem["name"])
 	}
-	if eventItem["timestamp"] != eventTime.UTC().Format(time.RFC3339Nano) {
-		t.Fatalf("event timestamp = %v", eventItem["timestamp"])
+	wantTimestamp := float64(eventTime.UTC().UnixNano())
+	if eventItem["timestamp"] != wantTimestamp {
+		t.Fatalf("event timestamp = %v (%T), want %v", eventItem["timestamp"], eventItem["timestamp"], wantTimestamp)
 	}
 }
 
