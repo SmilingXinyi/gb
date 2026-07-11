@@ -78,7 +78,7 @@ Axiom UI may display milliseconds in waterfall views, but ingest and APL queries
 
 | API | Meaning | Seq | Axiom |
 |-----|---------|-----|-------|
-| `span.AddEvent(name, attrs)` | Annotation on the current span | Extra CLEF log with same `@tr`/`@sp`, **no `@st`** | Nested in span `events[]` |
+| `span.AddEvent(name, attrs)` | Annotation on the current span | Extra CLEF log with same `@tr`/`@sp`, **no `@st`** | Nested in span `events[]` (`timestamp` = Unix ns) |
 | `sseq.Event(ctx, name, attrs)` | Standalone instant on the active trace | Correlated CLEF log (**no `@st`**) | Zero-duration record (`sseq.event=true`) |
 
 This matches Seq's model: `@tr` puts a record in a trace; `@st` makes it a span. Without `@st` it is a correlated log/event (same approach SerilogTracing uses for `Activity.Events` via `ActivityEvents.AsLogEvents`).
