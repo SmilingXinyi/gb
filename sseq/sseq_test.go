@@ -1,17 +1,23 @@
-package sseq
+package sseq_test
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/SmilingXinyi/gb/sseq"
 )
 
-func TestDoSpanHierarchy(t *testing.T) {
+func TestTraceHierarchy(t *testing.T) {
 	var receivedBodies []string
 	var mutex sync.Mutex
 
@@ -29,28 +35,22 @@ func TestDoSpanHierarchy(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := Setup(Config{
-		Endpoint:      server.URL,
-		Application:   "unit-test",
-		BatchSize:     1,
-		FlushInterval: time.Hour,
-	}); err != nil {
-		t.Fatalf("Setup() error = %v", err)
+	if err := sseq.SetupSeq(server.URL, "", "unit-test"); err != nil {
+		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(Shutdown)
+	t.Cleanup(sseq.Shutdown)
 
-	err := Do(context.Background(), "root", func(ctx context.Context) error {
-		return Do(ctx, "child-a", func(ctx context.Context) error {
-			return Do(ctx, "child-b", func(ctx context.Context) error {
+	err := sseq.Trace(context.Background(), "root", "server", func(ctx context.Context) error {
+		return sseq.Trace(ctx, "child-a", "", func(ctx context.Context) error {
+			return sseq.Trace(ctx, "child-b", "", func(context.Context) error {
 				return nil
 			})
 		})
 	})
 	if err != nil {
-		t.Fatalf("Do() error = %v", err)
+		t.Fatalf("Trace() error = %v", err)
 	}
-
-	Shutdown()
+	sseq.Shutdown()
 
 	mutex.Lock()
 	bodies := strings.Join(receivedBodies, "")
@@ -66,34 +66,140 @@ func TestDoSpanHierarchy(t *testing.T) {
 	}
 }
 
-func TestStartEndTraceIDStable(t *testing.T) {
+func TestTraceRecordsError(t *testing.T) {
+	var receivedBody string
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		receivedBody = string(body)
 		response.WriteHeader(http.StatusCreated)
 	}))
 	defer server.Close()
 
-	if err := Setup(Config{
-		Endpoint:      server.URL,
-		BatchSize:     1,
-		FlushInterval: time.Hour,
-	}); err != nil {
-		t.Fatalf("Setup() error = %v", err)
+	if err := sseq.SetupSeq(server.URL, "", ""); err != nil {
+		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(Shutdown)
+	t.Cleanup(sseq.Shutdown)
 
-	rootContext, rootSpan := Start(context.Background(), "root")
-	childContext, childSpan := Start(rootContext, "child")
-	childSpan.End()
-	rootSpan.End()
+	expectedErr := errors.New("payment failed")
+	err := sseq.Trace(context.Background(), "charge", "", func(context.Context) error {
+		return expectedErr
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("Trace() error = %v", err)
+	}
+	sseq.Shutdown()
 
-	if rootSpan.TraceID() == "" || childSpan.TraceID() == "" {
-		t.Fatalf("expected non-empty trace ids")
+	if !strings.Contains(receivedBody, `"@l":"Error"`) {
+		t.Fatalf("expected error level: %q", receivedBody)
 	}
-	if rootSpan.TraceID() != childSpan.TraceID() {
-		t.Fatalf("trace ids should match across spans")
+}
+
+func TestSeqFileAndAttributes(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "spans.clef")
+	if err := sseq.SetupSeqFile(filename, "file-app"); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
 	}
-	if childSpan.parentID != rootSpan.SpanID() {
-		t.Fatalf("child parent id = %q, want %q", childSpan.parentID, rootSpan.SpanID())
+	t.Cleanup(sseq.Shutdown)
+
+	err := sseq.Trace(context.Background(), "root", "server", func(ctx context.Context) error {
+		sseq.Set(ctx, "user.id", "42")
+		sseq.Event(ctx, "cache.miss", "key", "orders")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Trace() error = %v", err)
 	}
-	_ = childContext
+	sseq.Shutdown()
+
+	records := readJSONLines(t, filename)
+	if len(records) < 2 {
+		t.Fatalf("expected span + event, got %d", len(records))
+	}
+}
+
+func TestResume(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "resume.clef")
+	if err := sseq.SetupSeqFile(filename, ""); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(sseq.Shutdown)
+
+	var producerTraceID, producerSpanID string
+	err := sseq.Trace(context.Background(), "producer", "server", func(ctx context.Context) error {
+		producerTraceID, producerSpanID, _ = sseq.IDs(ctx)
+		workerCtx := sseq.Resume(context.Background(), producerTraceID, producerSpanID)
+		return sseq.Trace(workerCtx, "consumer", "consumer", func(context.Context) error {
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+	sseq.Shutdown()
+
+	if producerTraceID == "" {
+		t.Fatal("expected producer trace id")
+	}
+}
+
+func TestHTTPMiddleware(t *testing.T) {
+	var receivedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		receivedBody = string(body)
+		response.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	if err := sseq.SetupSeq(server.URL, "", ""); err != nil {
+		t.Fatalf("SetupSeq() error = %v", err)
+	}
+	t.Cleanup(sseq.Shutdown)
+
+	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusOK)
+	}))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/users", nil))
+	sseq.Shutdown()
+
+	if !strings.Contains(receivedBody, `"@mt":"GET /api/users"`) {
+		t.Fatalf("missing span: %q", receivedBody)
+	}
+	if !strings.Contains(receivedBody, `"StatusCode":200`) {
+		t.Fatalf("missing status: %q", receivedBody)
+	}
+}
+
+func TestSetupRequiresValues(t *testing.T) {
+	if err := sseq.SetupSeq("", "", ""); err == nil {
+		t.Fatal("expected SetupSeq error")
+	}
+	if err := sseq.SetupAxiom("", "dataset", ""); err == nil {
+		t.Fatal("expected SetupAxiom error")
+	}
+}
+
+func readJSONLines(t *testing.T, filename string) []map[string]any {
+	t.Helper()
+	file, err := os.Open(filename)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer file.Close()
+
+	var records []map[string]any
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		records = append(records, record)
+	}
+	return records
 }

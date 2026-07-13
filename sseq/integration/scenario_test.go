@@ -1,9 +1,10 @@
-package sseq_test
+package integration_test
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,21 +59,26 @@ type integrationSpanRecord struct {
 //	├── C   (runs, completes)
 //	└── D   (runs, completes)
 func runIntegrationSpanScenario() (traceID string, err error) {
-	requestContext, rootSpan := sseq.Start(context.Background(), rootSpanName)
-	traceID = rootSpan.TraceID()
+	requestContext, endRoot := sseq.Start(context.Background(), rootSpanName, "server")
+	var ok bool
+	traceID, _, ok = sseq.IDs(requestContext)
+	if !ok {
+		endRoot()
+		return "", fmt.Errorf("missing trace id on root span")
+	}
 
 	for _, step := range integrationLinearSteps {
-		stepErr := sseq.Do(requestContext, step.name, func(context.Context) error {
+		stepErr := sseq.Trace(requestContext, step.name, "", func(context.Context) error {
 			time.Sleep(step.duration)
 			return nil
 		})
 		if stepErr != nil {
-			rootSpan.End()
+			endRoot()
 			return traceID, stepErr
 		}
 	}
 
-	rootSpan.End()
+	endRoot()
 	return traceID, nil
 }
 
@@ -180,16 +186,8 @@ func TestIntegrationSpanScenarioClef(t *testing.T) {
 	tempDir := t.TempDir()
 	filename := filepath.Join(tempDir, "integration-spans.clef")
 
-	if err := sseq.Setup(sseq.Config{
-		Provider:      sseq.ProviderFile,
-		Application:   integrationApplication,
-		BatchSize:     1,
-		FlushInterval: 50 * time.Millisecond,
-		File: sseq.FileConfig{
-			Filename: filename,
-		},
-	}); err != nil {
-		t.Fatalf("Setup() error = %v", err)
+	if err := sseq.SetupSeqFile(filename, integrationApplication); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
 	}
 	t.Cleanup(sseq.Shutdown)
 

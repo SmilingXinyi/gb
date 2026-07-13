@@ -9,20 +9,25 @@ import (
 )
 
 func main() {
-	if err := sseq.Setup(sseq.DefaultConfig()); err != nil {
+	if err := sseq.SetupSeq("http://localhost:5342/ingest/clef", "", "demo"); err != nil {
 		panic(err)
 	}
 	defer sseq.Shutdown()
 
-	err := sseq.Do(context.Background(), "HTTP GET /api/users", func(ctx context.Context) error {
-		if err := sseq.Do(ctx, "Authenticate user", func(ctx context.Context) error {
+	err := sseq.Trace(context.Background(), "HTTP GET /api/users", "server", func(ctx context.Context) error {
+		sseq.Set(ctx, "http.method", "GET")
+		sseq.Set(ctx, "http.route", "/api/users")
+
+		if err := sseq.Trace(ctx, "Authenticate user", "internal", func(context.Context) error {
 			time.Sleep(20 * time.Millisecond)
 			return nil
 		}); err != nil {
 			return err
 		}
 
-		return sseq.Do(ctx, "Query users table", func(ctx context.Context) error {
+		return sseq.Trace(ctx, "Query users table", "", func(ctx context.Context) error {
+			sseq.Set(ctx, "db.system", "postgres")
+			sseq.Set(ctx, "db.operation", "SELECT")
 			time.Sleep(30 * time.Millisecond)
 			return nil
 		})

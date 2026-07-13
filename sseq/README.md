@@ -1,169 +1,98 @@
 # sseq
 
-`sseq` sends **span trees** to observability backends for timeline and waterfall visualization. Supported providers:
+Lightweight tracing for Go: create spans and send them to Seq or Axiom.
 
-| Provider | Format | Backend |
-|----------|--------|---------|
-| `http` | CLEF | [Seq](https://datalust.co/seq) |
-| `file` | CLEF or Axiom NDJSON | Local rotated files / Vector pipeline |
-| `axiom` | OTel-style NDJSON | [Axiom](https://axiom.co) direct ingest |
+No OpenTelemetry SDK. No plugin graph. One package surface: `sseq.go`.
 
-It does not write general application logs to console or slog.
+| Provider | HTTP | File (Vector) |
+|----------|------|----------------|
+| Seq | CLEF → Seq ingest | CLEF file → Vector → Seq |
+| Axiom | NDJSON → Axiom ingest | NDJSON file → Vector → Axiom |
 
-## Features
-
-- Span tree ingestion with parent/child relationships
-- Point events: `span.AddEvent` (on a span) and `sseq.Event` (standalone)
-- Simple API: `Do`, `Start`/`End`, `RecordError`, and HTTP middleware
-- HTTP middleware records response status codes
-- Startup validation via `Setup() error`
-- No OpenTelemetry SDK dependency
-- Opt-in batching with graceful shutdown
-
-## Installation
-
-```bash
-go get github.com/SmilingXinyi/gb/sseq@latest
-```
-
-## Quick start (Seq)
+## Quick start
 
 ```go
-if err := sseq.Setup(sseq.DefaultConfig()); err != nil {
-    log.Fatal(err)
-}
+sseq.SetupSeq("http://localhost:5342/ingest/clef", "", "my-service")
 defer sseq.Shutdown()
 
-err := sseq.Do(context.Background(), "HTTP GET /api/users", func(ctx context.Context) error {
-    return sseq.Do(ctx, "Query users table", func(ctx context.Context) error {
+err := sseq.Trace(ctx, "HTTP GET /api/users", "server", func(ctx context.Context) error {
+    sseq.Set(ctx, "http.route", "/api/users")
+    return sseq.Trace(ctx, "Query users", "", func(ctx context.Context) error {
+        sseq.Set(ctx, "db.system", "postgres")
         return nil
     })
 })
 ```
 
-## Axiom direct ingest
+## Setup
 
 ```go
-if err := sseq.Setup(sseq.Config{
-    Provider:    sseq.ProviderAxiom,
-    Application: "my-service",
-    Axiom: sseq.AxiomConfig{
-        Token:   os.Getenv("AXIOM_TOKEN"),
-        Dataset: "av-dataset",
-    },
-}); err != nil {
-    log.Fatal(err)
-}
-defer sseq.Shutdown()
+// Seq over HTTP
+sseq.SetupSeq(endpoint, apiKey, application)
+
+// Axiom over HTTP
+sseq.SetupAxiom(token, dataset, application)
+
+// File for Vector → Seq / Axiom
+sseq.SetupSeqFile("spans.clef", application)
+sseq.SetupAxiomFile("spans.ndjson", application)
 ```
 
-### Axiom time fields
+## API
 
-`sseq` derives span timing from `Start`/`End` automatically. The Axiom encoder emits:
+| Function | Purpose |
+|----------|---------|
+| `SetupSeq` / `SetupAxiom` | HTTP export |
+| `SetupSeqFile` / `SetupAxiomFile` | File export for Vector |
+| `Shutdown` | Flush and close |
+| `Trace(ctx, name, kind, fn)` | Run work inside a span |
+| `Start(ctx, name, kind)` | Manual span; returns `(ctx, end)` |
+| `Set(ctx, key, value)` | Attribute on active span |
+| `Event(ctx, name, key, value, ...)` | Point event on active span |
+| `Error(ctx, err)` | Mark active span failed |
+| `IDs(ctx)` | Read trace/span ids |
+| `Resume(ctx, traceID, parentSpanID)` | Continue async work |
+| `HTTP(handler)` | HTTP middleware (server spans) |
 
-| Field | Meaning | Ingest format |
-|-------|---------|---------------|
-| `_time` | Span **start** time | UTC RFC3339 (`2026-07-09T12:00:00.123456789Z`) |
-| `duration` | Elapsed time | **Integer nanoseconds** (30 ms → `30000000`) |
+`kind` may be empty: roots default to `server`, children to `internal`.
 
-Axiom UI may display milliseconds in waterfall views, but ingest and APL queries use nanoseconds:
-
-```apl
-| extend duration_ms = duration / 1000000.0
-```
-
-## Point events
-
-`sseq` supports two event styles:
-
-| API | Meaning | Seq | Axiom |
-|-----|---------|-----|-------|
-| `span.AddEvent(name, attrs)` | Annotation on the current span | Extra CLEF log with same `@tr`/`@sp`, **no `@st`** | Nested in span `events[]` (`timestamp` = Unix ns) |
-| `sseq.Event(ctx, name, attrs)` | Standalone instant on the active trace | Correlated CLEF log (**no `@st`**) | Zero-duration record (`sseq.event=true`) |
-
-This matches Seq's model: `@tr` puts a record in a trace; `@st` makes it a span. Without `@st` it is a correlated log/event (same approach SerilogTracing uses for `Activity.Events` via `ActivityEvents.AsLogEvents`).
+## Async
 
 ```go
-err := sseq.Do(ctx, "HTTP GET /api/orders", func(ctx context.Context) error {
-    ctx, span := sseq.Start(ctx, "Load orders")
-    defer span.End()
+sseq.Trace(ctx, "HTTP POST /orders", "server", func(ctx context.Context) error {
+    traceID, spanID, _ := sseq.IDs(ctx)
+    return bus.Publish(traceID, spanID, orderID)
+})
 
-    span.AddEvent("cache.miss", map[string]string{"key": "orders"})
-    sseq.Event(ctx, "orders.loaded", map[string]string{"count": "12"})
-    return nil
+workerCtx := sseq.Resume(context.Background(), traceID, spanID)
+sseq.Trace(workerCtx, "Process order", "consumer", func(context.Context) error {
+    return process(orderID)
 })
 ```
 
-## File provider + Vector
+## Layout
 
-```go
-if err := sseq.Setup(sseq.DefaultAxiomVectorFileConfig()); err != nil {
-    log.Fatal(err)
-}
+```text
+sseq.go                      # public API only
+internal/
+  types.go                   # shared structs
+  sender.go                  # batch flush
+  providers/
+    seq/                     # CLEF encode + HTTP
+    axiom/                   # Axiom encode + HTTP
+  file/                      # rotated file writer (Vector)
+  trace/                     # span lifecycle
 ```
-
-See `examples/axiom-vector/vector.toml` for the Vector sink configuration.
-
-## HTTP middleware
-
-```go
-import sseqmiddleware "github.com/SmilingXinyi/gb/sseq/middleware"
-
-http.Handle("/api/", sseqmiddleware.HTTP(apiHandler))
-```
-
-Records each request as a root span and attaches the HTTP status code. Responses with status `>= 500` are marked as span errors.
-
-## Async tasks (task-bus)
-
-When work continues in another goroutine or process, resume the producer trace before creating spans:
-
-```go
-// Producer: capture identifiers before enqueueing.
-err := sseq.Do(ctx, "HTTP POST /api/orders", func(requestContext context.Context) error {
-    traceID, parentSpanID, ok := sseq.TraceFromContext(requestContext)
-    if !ok {
-        return nil
-    }
-    return taskBus.Publish(taskBus.Message{
-        Payload:      orderID,
-        TraceID:      traceID,
-        ParentSpanID: parentSpanID,
-    })
-})
-
-// Consumer: continue the same trace tree.
-workerContext := sseq.ResumeTrace(context.Background(), message.TraceID, message.ParentSpanID)
-return sseq.Do(workerContext, "Process order async", func(context.Context) error {
-    return processOrder(message.Payload)
-})
-```
-
-## Provider selection
-
-When `Provider` is empty, auto-detection uses the first match in this order:
-
-1. File — when `File.Filename` is set
-2. Axiom — when `Axiom.Token` and `Axiom.Dataset` are set
-3. HTTP — when `HTTP.Endpoint` or `Endpoint` is set
-
-If multiple backends are configured, set `Provider` explicitly or `Setup` returns an ambiguous-config error.
 
 ## Testing
 
 ```bash
 cd sseq
 go test ./...
-
-# Integration tests (optional)
-go test ./... -run Integration
+go test ./integration/... -run Integration
 ```
-
-Environment variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `SSEQ_SKIP_INTEGRATION=1` | Skip Docker/live integration tests |
-| `AXIOM_TOKEN` / `AXIOM_DATASET` | Axiom integration test credentials |
-
-Seq integration expects local Seq on `http://localhost:5341`.
+| `SSEQ_SKIP_INTEGRATION=1` | Skip live integration tests |
+| `AXIOM_TOKEN` / `AXIOM_DATASET` | Axiom credentials |
