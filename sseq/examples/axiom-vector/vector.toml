@@ -1,7 +1,7 @@
 # Example Vector pipeline for sseq Axiom-formatted span files.
 #
-# 1. Configure sseq to write Axiom NDJSON:
-#    sseq.Setup(sseq.DefaultAxiomVectorFileConfig())
+# 1. Configure sseq:
+#    sseq.SetupAxiomFile("spans.ndjson", "my-service")
 # 2. Start Vector with this config to forward spans to Axiom.
 
 [sources.sseq_spans]

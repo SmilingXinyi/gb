@@ -1,4 +1,4 @@
-package sseq_test
+package integration_test
 
 import (
 	"bytes"
@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/SmilingXinyi/gb/sseq"
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -26,31 +26,18 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 		t.Skip("integration disabled by SSEQ_SKIP_INTEGRATION=1")
 	}
 
+	// Load local credentials from sseq/.env when present (does not override existing env).
+	_ = godotenv.Load()
+	_ = godotenv.Load("../.env")
+
 	token := os.Getenv("AXIOM_TOKEN")
 	dataset := os.Getenv("AXIOM_DATASET")
 	if token == "" || dataset == "" {
 		t.Skip("AXIOM_TOKEN and AXIOM_DATASET are required for Axiom integration test")
 	}
 
-	ingestTracker := newAxiomIngestTracker(http.DefaultTransport)
-	httpClient := &http.Client{
-		Transport: ingestTracker,
-		Timeout:   30 * time.Second,
-	}
-
-	if err := sseq.Setup(sseq.Config{
-		Provider:      sseq.ProviderAxiom,
-		Application:   integrationApplication,
-		BatchSize:     1,
-		FlushInterval: 100 * time.Millisecond,
-		Axiom: sseq.AxiomConfig{
-			Token:      token,
-			Dataset:    dataset,
-			Domain:     "api.axiom.co",
-			HTTPClient: httpClient,
-		},
-	}); err != nil {
-		t.Fatalf("Setup() error = %v", err)
+	if err := sseq.SetupAxiom(token, dataset, integrationApplication); err != nil {
+		t.Fatalf("SetupAxiom() error = %v", err)
 	}
 	t.Cleanup(sseq.Shutdown)
 
@@ -65,74 +52,10 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 	sseq.Shutdown()
 
 	spans, queryErr := queryAxiomSpans(token, dataset, traceID)
-	if queryErr == nil {
-		verifyIntegrationSpanTree(t, traceID, spans)
-		return
-	}
-
-	if !strings.Contains(queryErr.Error(), "token may lack query permission") {
+	if queryErr != nil {
 		t.Fatalf("query axiom spans: %v", queryErr)
 	}
-
-	ingestedEvents, ingestRequests := ingestTracker.stats()
-	if ingestRequests < integrationSpanCount {
-		t.Fatalf("expected at least %d ingest requests, got %d", integrationSpanCount, ingestRequests)
-	}
-	if ingestedEvents < integrationSpanCount {
-		t.Fatalf("expected at least %d ingested events, got %d (query unavailable: %v)", integrationSpanCount, ingestedEvents, queryErr)
-	}
-
-	t.Logf("query verification skipped (%v); ingest verified %d events across %d requests", queryErr, ingestedEvents, ingestRequests)
-}
-
-type axiomIngestTracker struct {
-	base           http.RoundTripper
-	requestCount   atomic.Int32
-	ingestedEvents atomic.Int32
-}
-
-func newAxiomIngestTracker(base http.RoundTripper) *axiomIngestTracker {
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return &axiomIngestTracker{base: base}
-}
-
-func (tracker *axiomIngestTracker) RoundTrip(request *http.Request) (*http.Response, error) {
-	response, err := tracker.base.RoundTrip(request)
-	if err != nil {
-		return response, err
-	}
-	if request.Method != http.MethodPost || !strings.Contains(request.URL.Path, "/ingest") {
-		return response, nil
-	}
-
-	responseBody, readErr := io.ReadAll(response.Body)
-	response.Body.Close()
-	if readErr != nil {
-		return nil, readErr
-	}
-	response.Body = io.NopCloser(bytes.NewReader(responseBody))
-
-	if response.StatusCode == http.StatusOK {
-		tracker.requestCount.Add(1)
-		tracker.ingestedEvents.Add(parseAxiomIngestedCount(responseBody))
-	}
-	return response, nil
-}
-
-func (tracker *axiomIngestTracker) stats() (ingestedEvents int, ingestRequests int) {
-	return int(tracker.ingestedEvents.Load()), int(tracker.requestCount.Load())
-}
-
-func parseAxiomIngestedCount(body []byte) int32 {
-	var ingestResponse struct {
-		Ingested int32 `json:"ingested"`
-	}
-	if err := json.Unmarshal(body, &ingestResponse); err != nil {
-		return 0
-	}
-	return ingestResponse.Ingested
+	verifyIntegrationSpanTree(t, traceID, spans)
 }
 
 func queryAxiomSpans(token, dataset, traceID string) ([]integrationSpanRecord, error) {
