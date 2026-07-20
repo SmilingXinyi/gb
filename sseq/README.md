@@ -92,6 +92,24 @@ go test ./...
 go test ./integration/... -run Integration
 ```
 
+### Seq Docker (integration)
+
+```bash
+docker run -d --name sseq-seq \
+  -e ACCEPT_EULA=Y \
+  -e SEQ_FIRSTRUN_ADMINUSERNAME=admin \
+  -e SEQ_FIRSTRUN_ADMINPASSWORD='Admin123456!' \
+  -p 5341:80 \
+  -p 5342:5341 \
+  datalust/seq:latest
+```
+
+Then open `http://localhost:5341` and run:
+
+```bash
+go test ./integration/... -run TestIntegrationSpanTreeWithSeqDocker -v
+```
+
 | Variable | Purpose |
 |----------|---------|
 | `SSEQ_SKIP_INTEGRATION=1` | Skip live integration tests |
