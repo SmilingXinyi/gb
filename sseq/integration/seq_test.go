@@ -9,6 +9,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,8 @@ const (
 	seqIngestEndpoint = "http://localhost:5342/ingest/clef"
 	seqUsername       = "admin"
 	seqPassword       = "Admin123456!"
+	// Seq 2025 requires a first-login password change; use a distinct value.
+	seqPasswordAfterChange = "Admin123456!Changed"
 )
 
 func TestIntegrationSpanTreeWithSeqDocker(t *testing.T) {
@@ -130,11 +133,30 @@ func parseSeqElapsed(value string) time.Duration {
 	if value == "" {
 		return 0
 	}
-	parsed, err := time.ParseDuration(value)
-	if err == nil {
+	if parsed, err := time.ParseDuration(value); err == nil {
 		return parsed
 	}
-	return 0
+
+	// Seq renders Elapsed as a .NET TimeSpan, e.g. "00:00:00.0908570".
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	hours, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0
+	}
+	minutes, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0
+	}
+	seconds, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil {
+		return 0
+	}
+	return time.Duration(hours)*time.Hour +
+		time.Duration(minutes)*time.Minute +
+		time.Duration(seconds*float64(time.Second))
 }
 
 func loginSeqClient() (*http.Client, string, error) {
@@ -144,35 +166,64 @@ func loginSeqClient() (*http.Client, string, error) {
 	}
 	client := &http.Client{Jar: jar}
 
-	loginBody, err := json.Marshal(map[string]string{
-		"Username": seqUsername,
-		"Password": seqPassword,
-	})
+	csrfToken, mustChangePassword, err := postSeqLogin(client, seqPassword, "")
+	if err == nil {
+		return client, csrfToken, nil
+	}
+	if mustChangePassword {
+		csrfToken, _, err = postSeqLogin(client, seqPassword, seqPasswordAfterChange)
+		if err != nil {
+			return nil, "", err
+		}
+		return client, csrfToken, nil
+	}
+
+	// Password may already have been rotated by a previous test run.
+	csrfToken, _, err = postSeqLogin(client, seqPasswordAfterChange, "")
 	if err != nil {
 		return nil, "", err
+	}
+	return client, csrfToken, nil
+}
+
+// postSeqLogin authenticates against Seq. When newPassword is set, Seq performs
+// the required first-login password change in the same request.
+func postSeqLogin(client *http.Client, password, newPassword string) (csrfToken string, mustChangePassword bool, err error) {
+	payload := map[string]string{
+		"Username": seqUsername,
+		"Password": password,
+	}
+	if newPassword != "" {
+		payload["NewPassword"] = newPassword
+	}
+
+	loginBody, err := json.Marshal(payload)
+	if err != nil {
+		return "", false, err
 	}
 
 	request, err := http.NewRequest(http.MethodPost, seqUIEndpoint+"/api/users/login", bytes.NewReader(loginBody))
 	if err != nil {
-		return nil, "", err
+		return "", false, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, "", err
+		return "", false, err
 	}
 	defer response.Body.Close()
 
 	var loginResponse struct {
-		CsrfToken string `json:"CsrfToken"`
-		Error     string `json:"Error"`
+		CsrfToken         string `json:"CsrfToken"`
+		Error              string `json:"Error"`
+		MustChangePassword bool   `json:"MustChangePassword"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&loginResponse); err != nil {
-		return nil, "", err
+		return "", false, err
 	}
 	if loginResponse.Error != "" {
-		return nil, "", fmt.Errorf("%s", loginResponse.Error)
+		return "", loginResponse.MustChangePassword, fmt.Errorf("%s", loginResponse.Error)
 	}
-	return client, loginResponse.CsrfToken, nil
+	return loginResponse.CsrfToken, false, nil
 }
