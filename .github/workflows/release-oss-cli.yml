@@ -1,0 +1,146 @@
+name: Release OSS CLI
+
+on:
+  push:
+    tags:
+      - "oss/v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to release (e.g. oss/v0.1.0). Leave empty to build the current ref without publishing."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: oss
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            oss/go.sum
+            go.work.sum
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+            VERSION="${{ inputs.tag }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved version: ${VERSION}"
+
+      - name: Build CLI
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          BINARY_NAME="gb-oss-${GOOS}-${GOARCH}"
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "dist/${BINARY_NAME}" ./cmd/cli
+          echo "Built dist/${BINARY_NAME}"
+          ls -lh "dist/${BINARY_NAME}"
+
+      - name: Package artifact
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          BINARY_NAME="gb-oss-${GOOS}-${GOARCH}"
+          SAFE_VERSION="${VERSION//\//-}"
+          ARCHIVE_NAME="gb-oss_${SAFE_VERSION}_${GOOS}_${GOARCH}.tar.gz"
+          cp "dist/${BINARY_NAME}" "dist/gb-oss"
+          tar -C dist -czf "dist/${ARCHIVE_NAME}" gb-oss
+          (cd dist && sha256sum "${ARCHIVE_NAME}" > "${ARCHIVE_NAME}.sha256")
+          rm -f "dist/gb-oss"
+          ls -lh dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gb-oss-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            oss/dist/*.tar.gz
+            oss/dist/*.sha256
+          if-no-files-found: error
+
+  publish-release:
+    needs: build-and-release
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ -z "${TAG}" ]]; then
+            echo "Release tag is empty" >&2
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: gb-oss-*
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lhR release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: OSS CLI ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            release-assets/*.tar.gz
+            release-assets/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

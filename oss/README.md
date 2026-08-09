@@ -18,6 +18,7 @@ oss/
 ├── object.go           # Shared types (PutOptions, ObjectMeta, ListResult, etc.)
 ├── errors.go           # Common error types
 ├── client.go           # New() factory and Register() mechanism
+├── cmd/cli/            # gb-oss command-line tool
 ├── baidu/              # Baidu BOS adapter
 ├── aliyun/             # Aliyun OSS adapter (skeleton)
 ├── tencent/            # Tencent COS adapter
@@ -160,6 +161,36 @@ go test ./tencent/ -v -run "TestIntegration"
 ```bash
 go run ./examples/tencent/
 ```
+
+## CLI (`gb-oss`)
+
+Build a local binary:
+
+```bash
+cd oss
+go build -o gb-oss ./cmd/cli
+```
+
+Common commands (credentials can also come from `OSS_*` env vars):
+
+```bash
+./gb-oss -provider baidu -access-key "$AK" -secret-key "$SK" -region bj -bucket my-bucket \
+  put docs/hello.txt ./hello.txt
+
+./gb-oss -provider baidu -bucket my-bucket get docs/hello.txt ./hello-download.txt
+./gb-oss -provider baidu -bucket my-bucket stat docs/hello.txt
+./gb-oss -provider baidu -bucket my-bucket list docs/
+./gb-oss -provider baidu -bucket my-bucket sign-url docs/hello.txt -expire 600
+```
+
+### Releasing Linux packages
+
+Push a tag matching `oss/v*` (for example `oss/v0.1.0`). The `Release OSS CLI` workflow builds and publishes:
+
+- `gb-oss_<tag>_linux_amd64.tar.gz`
+- `gb-oss_<tag>_linux_arm64.tar.gz`
+
+Each archive contains a `gb-oss` binary and a matching `.sha256` checksum file.
 
 ### Aliyun OSS / AWS S3
 
