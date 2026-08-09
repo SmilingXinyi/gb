@@ -187,10 +187,8 @@ Common commands (credentials can also come from `OSS_*` env vars):
 
 Push a tag matching `oss/v*` (for example `oss/v0.1.0`). The `Release OSS CLI` workflow builds and publishes:
 
-- `gb-oss_<tag>_linux_amd64.tar.gz`
-- `gb-oss_<tag>_linux_arm64.tar.gz`
-
-Each archive contains a `gb-oss` binary and a matching `.sha256` checksum file.
+- `gb-oss-linux-amd64`
+- `gb-oss-linux-arm64`
 
 ### Aliyun OSS / AWS S3
 
