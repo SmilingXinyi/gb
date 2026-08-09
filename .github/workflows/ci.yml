@@ -31,7 +31,7 @@ jobs:
       - name: Run module tests
         run: |
           set -euo pipefail
-          for module in gsc jv llm log oss sseq trace_id utils; do
+          for module in config gsc jv llm log oss sseq trace_id utils; do
             echo "Testing ${module}..."
             (cd "${module}" && go test ./...)
           done
