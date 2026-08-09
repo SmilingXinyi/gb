@@ -87,22 +87,27 @@ func (receiver *adapter) getClient(bucket string) (*cos.Client, error) {
 }
 
 // Put 调用 COS SDK 的 Object.Put 上传对象。
+// When size >= 0, ContentLength is set so non-seekable readers (pipes, network streams)
+// can upload without relying on SDK length probing.
 func (receiver *adapter) Put(ctx context.Context, bucket, key string, reader io.Reader, size int64, options *oss.PutOptions) error {
 	client, err := receiver.getClient(bucket)
 	if err != nil {
 		return err
 	}
 
-	putOptions := &cos.ObjectPutOptions{}
+	putOptions := &cos.ObjectPutOptions{
+		ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{},
+	}
+	if size >= 0 {
+		putOptions.ContentLength = size
+	}
 	if options != nil {
-		putOptions.ObjectPutHeaderOptions = &cos.ObjectPutHeaderOptions{
-			ContentType:  options.ContentType,
-			XCosStorageClass: options.StorageClass,
-		}
+		putOptions.ContentType = options.ContentType
+		putOptions.XCosStorageClass = options.StorageClass
 		if len(options.Metadata) > 0 {
 			putOptions.XCosMetaXXX = &http.Header{}
 			for metaKey, metaValue := range options.Metadata {
-				// 腾讯云自定义元数据前缀为 x-cos-meta-
+				// COS custom metadata keys must use the x-cos-meta- prefix.
 				fullKey := metaKey
 				if !strings.HasPrefix(strings.ToLower(metaKey), "x-cos-meta-") {
 					fullKey = "x-cos-meta-" + metaKey
@@ -256,36 +261,36 @@ func (receiver *adapter) SignURL(ctx context.Context, bucket, key, method string
 }
 
 // Copy 调用 COS SDK 的 Object.Copy 实现服务端复制。
+// Source URL uses the resolved source bucket host (works with Endpoint or Region config).
 func (receiver *adapter) Copy(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey string) error {
-	client, err := receiver.getClient(dstBucket)
+	dstClient, err := receiver.getClient(dstBucket)
 	if err != nil {
 		return err
 	}
-
-	// 腾讯云 Copy 需要源对象的 URL
-	// 格式: <bucketname-appid>.cos.<region>.myqcloud.com/<key>
-	srcBucketName := srcBucket
-	if srcBucketName == "" {
-		srcBucketName = receiver.config.Bucket
+	srcClient, err := receiver.getClient(srcBucket)
+	if err != nil {
+		return err
 	}
-	
-	srcURL := fmt.Sprintf("%s.cos.%s.myqcloud.com/%s", srcBucketName, receiver.config.Region, srcKey)
-	
-	_, _, err = client.Object.Copy(ctx, dstKey, srcURL, nil)
+	if srcClient.BaseURL == nil || srcClient.BaseURL.BucketURL == nil {
+		return fmt.Errorf("oss/tencent: copy: source bucket url is empty")
+	}
+
+	// Official COS Copy source format: <host>/<key> (no scheme).
+	srcURL := fmt.Sprintf("%s/%s", srcClient.BaseURL.BucketURL.Host, srcKey)
+	_, _, err = dstClient.Object.Copy(ctx, dstKey, srcURL, nil)
 	if err != nil {
 		return fmt.Errorf("oss/tencent: copy %s/%s to %s/%s: %w", srcBucket, srcKey, dstBucket, dstKey, err)
 	}
 	return nil
 }
 
-// isNotFound 判断是否为 404 错误。
+// isNotFound reports whether err represents a COS 404 Not Found response.
 func isNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	// 腾讯云 SDK 错误处理
 	if cosErr, ok := err.(*cos.ErrorResponse); ok {
-		return cosErr.Response.StatusCode == http.StatusNotFound
+		return cosErr.Response != nil && cosErr.Response.StatusCode == http.StatusNotFound
 	}
 	return strings.Contains(err.Error(), "404")
 }

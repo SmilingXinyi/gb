@@ -145,7 +145,7 @@ go run ./examples/baidu/
 **Unit tests (no credentials required)**
 
 ```bash
-go test ./tencent/ -v -run "TestIsNotFound"
+go test ./tencent/ -v -run "TestNewClient|TestIsNotFound|TestGetClient"
 ```
 
 **Integration tests**
