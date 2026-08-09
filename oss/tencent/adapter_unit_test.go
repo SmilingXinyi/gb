@@ -7,7 +7,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tencentyun/cos-go-sdk-v5"
+
+	"github.com/SmilingXinyi/gb/oss"
 )
 
 // TestIsNotFound_404 ErrorResponse with StatusCode 404 should return true.
@@ -30,6 +33,11 @@ func TestIsNotFound_403(t *testing.T) {
 	assert.False(t, isNotFound(err))
 }
 
+// TestIsNotFound_NilResponse ErrorResponse with nil Response should return false without panic.
+func TestIsNotFound_NilResponse(t *testing.T) {
+	assert.False(t, isNotFound(&cos.ErrorResponse{}))
+}
+
 // TestIsNotFound_StringContains404 error string containing 404 should return true.
 func TestIsNotFound_StringContains404(t *testing.T) {
 	assert.True(t, isNotFound(errors.New("some error with 404 status")))
@@ -38,6 +46,35 @@ func TestIsNotFound_StringContains404(t *testing.T) {
 // TestIsNotFound_OtherError other errors should return false.
 func TestIsNotFound_OtherError(t *testing.T) {
 	assert.False(t, isNotFound(errors.New("some other error")))
+}
+
+// TestGetClient_RegionURL builds the default virtual-hosted bucket URL from Region.
+func TestGetClient_RegionURL(t *testing.T) {
+	storage, err := newAdapter(oss.Config{
+		AccessKey: "ak",
+		SecretKey: "sk",
+		Region:    "ap-guangzhou",
+		Bucket:    "demo-1250000000",
+	})
+	require.NoError(t, err)
+
+	client, err := storage.(*adapter).getClient("")
+	require.NoError(t, err)
+	assert.Equal(t, "https://demo-1250000000.cos.ap-guangzhou.myqcloud.com", client.BaseURL.BucketURL.String())
+}
+
+// TestGetClient_EndpointTemplate replaces {bucket} in Endpoint when provided.
+func TestGetClient_EndpointTemplate(t *testing.T) {
+	storage, err := newAdapter(oss.Config{
+		AccessKey: "ak",
+		SecretKey: "sk",
+		Endpoint:  "https://{bucket}.cos.ap-shanghai.myqcloud.com",
+	})
+	require.NoError(t, err)
+
+	client, err := storage.(*adapter).getClient("demo-1250000000")
+	require.NoError(t, err)
+	assert.Equal(t, "https://demo-1250000000.cos.ap-shanghai.myqcloud.com", client.BaseURL.BucketURL.String())
 }
 
 // TestMetadataHandling Stat 应正确处理腾讯云返回的 "x-cos-meta-" 前缀。
