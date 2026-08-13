@@ -34,7 +34,7 @@ type Encoder interface {
 
 // Writer delivers encoded payload batches.
 type Writer interface {
-	WritePayload(payload []byte)
+	WritePayload(payload []byte) error
 	Close() error
 }
 
@@ -42,6 +42,7 @@ type Writer interface {
 type BatchConfig struct {
 	BatchSize     int
 	FlushInterval time.Duration
+	OnError       func(error)
 }
 
 const (
@@ -49,3 +50,8 @@ const (
 	DefaultFlushInterval = time.Second
 	DefaultHTTPTimeout   = 10 * time.Second
 )
+
+// IsSuccessStatus reports whether statusCode is a 2xx HTTP status.
+func IsSuccessStatus(statusCode int) bool {
+	return statusCode >= 200 && statusCode < 300
+}

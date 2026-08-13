@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SmilingXinyi/gb/sseq"
 )
@@ -178,6 +181,282 @@ func TestSetupRequiresValues(t *testing.T) {
 	if err := sseq.SetupAxiom("", "dataset", ""); err == nil {
 		t.Fatal("expected SetupAxiom error")
 	}
+}
+
+func TestReservedClefAttributesAreNotOverwritten(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "reserved.clef")
+	if err := sseq.SetupSeqFile(filename, "file-app"); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(sseq.Shutdown)
+
+	err := sseq.Trace(context.Background(), "query users", "server", func(ctx context.Context) error {
+		sseq.Set(ctx, "@tr", "should-not-overwrite")
+		sseq.Set(ctx, "@mt", "nope")
+		sseq.Set(ctx, "user.id", "42")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+	sseq.Shutdown()
+
+	records := readJSONLines(t, filename)
+	if len(records) == 0 {
+		t.Fatal("expected span record")
+	}
+	if records[0]["@mt"] != "query users" {
+		t.Fatalf("@mt = %v", records[0]["@mt"])
+	}
+	if records[0]["@tr"] == "should-not-overwrite" {
+		t.Fatal("trace id was overwritten by attribute")
+	}
+	if records[0]["user.id"] != "42" {
+		t.Fatalf("user.id = %v", records[0]["user.id"])
+	}
+}
+
+func TestSeqHTTPAcceptsStatusOK(t *testing.T) {
+	var receivedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		receivedBody = string(body)
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	var exportErrors []error
+	var mutex sync.Mutex
+	if err := sseq.SetupSeq(server.URL, "", "ok-status",
+		sseq.WithBatchSize(1),
+		sseq.WithErrorHandler(func(err error) {
+			mutex.Lock()
+			exportErrors = append(exportErrors, err)
+			mutex.Unlock()
+		}),
+	); err != nil {
+		t.Fatalf("SetupSeq() error = %v", err)
+	}
+	t.Cleanup(sseq.Shutdown)
+
+	if err := sseq.Trace(context.Background(), "ok", "", func(context.Context) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+	sseq.Shutdown()
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(exportErrors) != 0 {
+		t.Fatalf("unexpected export errors: %v", exportErrors)
+	}
+	if !strings.Contains(receivedBody, `"@mt":"ok"`) {
+		t.Fatalf("missing span: %q", receivedBody)
+	}
+}
+
+func TestShutdownWaitsForInFlightSpan(t *testing.T) {
+	var receivedBody string
+	var mutex sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		mutex.Lock()
+		receivedBody += string(body)
+		mutex.Unlock()
+		response.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	if err := sseq.SetupSeq(server.URL, "", "drain", sseq.WithBatchSize(1)); err != nil {
+		t.Fatalf("SetupSeq() error = %v", err)
+	}
+	t.Cleanup(sseq.Shutdown)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- sseq.Trace(context.Background(), "slow", "", func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		sseq.Shutdown()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		t.Fatal("Shutdown returned before in-flight span ended")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+	select {
+	case <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not return after span ended")
+	}
+
+	mutex.Lock()
+	body := receivedBody
+	mutex.Unlock()
+	if !strings.Contains(body, `"@mt":"slow"`) {
+		t.Fatalf("missing span after shutdown: %q", body)
+	}
+}
+
+func TestHTTPMiddlewarePanicMarksError(t *testing.T) {
+	var receivedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		receivedBody = string(body)
+		response.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	if err := sseq.SetupSeq(server.URL, "", "panic", sseq.WithBatchSize(1)); err != nil {
+		t.Fatalf("SetupSeq() error = %v", err)
+	}
+	t.Cleanup(sseq.Shutdown)
+
+	handler := sseq.HTTP(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}))
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected panic to propagate")
+			}
+		}()
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
+	}()
+	sseq.Shutdown()
+
+	if !strings.Contains(receivedBody, `"@l":"Error"`) {
+		t.Fatalf("expected error span: %q", receivedBody)
+	}
+	if !strings.Contains(receivedBody, "boom") {
+		t.Fatalf("expected panic message: %q", receivedBody)
+	}
+}
+
+func TestHTTPMiddlewareUnwrapAndHijack(t *testing.T) {
+	inner := &hijackableWriter{ResponseWriter: httptest.NewRecorder()}
+	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		unwrapper, ok := response.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			t.Error("ResponseWriter does not implement Unwrap")
+			return
+		}
+		if unwrapper.Unwrap() != inner {
+			t.Error("Unwrap() did not return the original writer")
+		}
+		hijacker, ok := response.(http.Hijacker)
+		if !ok {
+			t.Error("ResponseWriter does not implement http.Hijacker")
+			return
+		}
+		_, _, err := hijacker.Hijack()
+		if err == nil {
+			t.Error("expected hijack error from inner writer")
+		}
+		if !inner.hijacked {
+			t.Error("inner Hijack was not called")
+		}
+	}))
+	handler.ServeHTTP(inner, httptest.NewRequest(http.MethodGet, "/ws", nil))
+}
+
+func TestInjectExtractTraceparent(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "traceparent.clef")
+	if err := sseq.SetupSeqFile(filename, "traceparent"); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(sseq.Shutdown)
+
+	header := make(http.Header)
+	err := sseq.Trace(context.Background(), "outbound", "client", func(ctx context.Context) error {
+		sseq.Inject(ctx, header)
+		traceID, spanID, ok := sseq.IDs(ctx)
+		if !ok {
+			t.Fatal("expected span ids")
+		}
+		extractedTraceID, extractedSpanID, extracted := sseq.Extract(header)
+		if !extracted {
+			t.Fatal("expected extract success")
+		}
+		if extractedTraceID != strings.ToLower(traceID) || extractedSpanID != strings.ToLower(spanID) {
+			t.Fatalf("extracted (%s, %s) want (%s, %s)", extractedTraceID, extractedSpanID, traceID, spanID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+
+	if _, _, ok := sseq.Extract(http.Header{}); ok {
+		t.Fatal("expected empty header extract to fail")
+	}
+}
+
+func TestHTTPMiddlewareContinuesRemoteTrace(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "remote.clef")
+	if err := sseq.SetupSeqFile(filename, "remote"); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(sseq.Shutdown)
+
+	remoteTraceID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	remoteSpanID := "bbbbbbbbbbbbbbbb"
+	request := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	request.Header.Set("traceparent", "00-"+remoteTraceID+"-"+remoteSpanID+"-01")
+
+	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		traceID, _, ok := sseq.IDs(request.Context())
+		if !ok || traceID != remoteTraceID {
+			t.Errorf("trace id = %q, ok = %v", traceID, ok)
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	sseq.Shutdown()
+
+	records := readJSONLines(t, filename)
+	if len(records) == 0 {
+		t.Fatal("expected span record")
+	}
+	if records[0]["@tr"] != remoteTraceID {
+		t.Fatalf("@tr = %v", records[0]["@tr"])
+	}
+	if records[0]["@ps"] != remoteSpanID {
+		t.Fatalf("@ps = %v", records[0]["@ps"])
+	}
+	if _, exists := records[0]["http.route"]; exists {
+		t.Fatal("http.route should not be set from the raw path")
+	}
+	if records[0]["http.target"] != "/users/42" {
+		t.Fatalf("http.target = %v", records[0]["http.target"])
+	}
+}
+
+type hijackableWriter struct {
+	http.ResponseWriter
+	hijacked bool
+}
+
+func (writer *hijackableWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	writer.hijacked = true
+	return nil, nil, fmt.Errorf("hijack not connected")
 }
 
 func readJSONLines(t *testing.T, filename string) []map[string]any {

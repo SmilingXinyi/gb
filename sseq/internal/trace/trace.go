@@ -24,61 +24,92 @@ type remoteTrace struct {
 	spanID  string
 }
 
+const defaultShutdownTimeout = 5 * time.Second
+
 // Tracer owns a sender and creates spans.
 type Tracer struct {
-	Application string
-	Sender      *ss.Sender
+	application     string
+	sender          *ss.Sender
+	shutdownTimeout time.Duration
+	errorHandler    func(error)
+	lifecycle       sync.RWMutex
+	closed          bool
+	active          sync.WaitGroup
 }
 
 // Span is one operation in a trace.
 type Span struct {
-	Name           string
-	Application    string
-	TraceID        string
-	SpanID         string
-	ParentID       string
-	Kind           string
-	StartTime      time.Time
-	EndTime        time.Time
-	Ended          bool
-	Sender         *ss.Sender
-	HasError       bool
-	StatusMessage  string
-	HTTPStatusCode int
-	Attributes     map[string]any
-	Events         []ss.TimedEvent
-	Mutex          sync.Mutex
+	name           string
+	application    string
+	traceID        string
+	spanID         string
+	parentID       string
+	kind           string
+	startTime      time.Time
+	endTime        time.Time
+	ended          bool
+	sender         *ss.Sender
+	hasError       bool
+	statusMessage  string
+	httpStatusCode int
+	attributes     map[string]any
+	events         []ss.TimedEvent
+	mutex          sync.Mutex
+	onEnd          func()
+	errorHandler   func(error)
+}
+
+// NewTracer creates a tracer that exports completed spans through sender.
+func NewTracer(application string, sender *ss.Sender, shutdownTimeout time.Duration, errorHandler func(error)) *Tracer {
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = defaultShutdownTimeout
+	}
+	return &Tracer{
+		application:     application,
+		sender:          sender,
+		shutdownTimeout: shutdownTimeout,
+		errorHandler:    errorHandler,
+	}
 }
 
 // Start begins a span and stores it in ctx.
 func (tracer *Tracer) Start(ctx context.Context, name, kind string) (context.Context, *Span) {
 	if tracer == nil {
-		return ctx, &Span{Name: name, StartTime: time.Now().UTC(), Kind: defaultKind(kind, false)}
+		return ctx, &Span{name: name, startTime: time.Now().UTC(), kind: defaultKind(kind, false)}
 	}
 
 	span := &Span{
-		Name:        name,
-		Application: tracer.Application,
-		StartTime:   time.Now().UTC(),
-		Sender:      tracer.Sender,
-		Kind:        kind,
+		name:         name,
+		application:  tracer.application,
+		startTime:    time.Now().UTC(),
+		kind:         kind,
+		errorHandler: tracer.errorHandler,
 	}
+
+	tracer.lifecycle.RLock()
+	closed := tracer.closed
+	if !closed && tracer.sender != nil {
+		tracer.active.Add(1)
+		span.sender = tracer.sender
+		span.onEnd = tracer.active.Done
+	}
+	tracer.lifecycle.RUnlock()
 
 	parentTraceID, parentSpanID, hasParent := parentFromContext(ctx)
 	if hasParent {
-		span.TraceID = parentTraceID
-		span.ParentID = parentSpanID
-		if span.Kind == "" {
-			span.Kind = "internal"
+		span.traceID = parentTraceID
+		span.parentID = parentSpanID
+		if span.kind == "" {
+			span.kind = "internal"
 		}
 	} else {
 		traceID, err := newTraceID()
 		if err != nil {
 			traceID = "00000000000000000000000000000000"
 		}
-		span.TraceID = traceID
-		if span.Kind == "" {
-			span.Kind = "server"
+		span.traceID = traceID
+		if span.kind == "" {
+			span.kind = "server"
 		}
 	}
 
@@ -86,7 +117,7 @@ func (tracer *Tracer) Start(ctx context.Context, name, kind string) (context.Con
 	if err != nil {
 		spanID = "0000000000000000"
 	}
-	span.SpanID = spanID
+	span.spanID = spanID
 	return contextWithSpan(ctx, span), span
 }
 
@@ -94,6 +125,9 @@ func (tracer *Tracer) Start(ctx context.Context, name, kind string) (context.Con
 func (tracer *Tracer) Trace(ctx context.Context, name, kind string, fn func(context.Context) error) error {
 	ctx, span := tracer.Start(ctx, name, kind)
 	defer span.End()
+	if fn == nil {
+		return nil
+	}
 	err := fn(ctx)
 	if err != nil {
 		span.RecordError(err)
@@ -101,13 +135,43 @@ func (tracer *Tracer) Trace(ctx context.Context, name, kind string, fn func(cont
 	return err
 }
 
-// Close flushes the sender.
+// Close waits for in-flight spans, then flushes the sender.
 func (tracer *Tracer) Close() error {
-	if tracer == nil || tracer.Sender == nil {
+	if tracer == nil {
 		return nil
 	}
-	err := tracer.Sender.Close()
-	tracer.Sender = nil
+
+	tracer.lifecycle.Lock()
+	if tracer.closed {
+		tracer.lifecycle.Unlock()
+		return nil
+	}
+	tracer.closed = true
+	tracer.lifecycle.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		tracer.active.Wait()
+		close(done)
+	}()
+
+	timeout := tracer.shutdownTimeout
+	if timeout <= 0 {
+		timeout = defaultShutdownTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		reportError(tracer.errorHandler, fmt.Errorf("shutdown timed out after %s", timeout))
+	}
+
+	if tracer.sender == nil {
+		return nil
+	}
+	err := tracer.sender.Close()
+	tracer.sender = nil
 	return err
 }
 
@@ -116,31 +180,47 @@ func (span *Span) End() {
 	if span == nil {
 		return
 	}
-	span.Mutex.Lock()
-	defer span.Mutex.Unlock()
-	if span.Ended {
+
+	span.mutex.Lock()
+	if span.ended {
+		span.mutex.Unlock()
 		return
 	}
-	span.Ended = true
-	span.EndTime = time.Now().UTC()
-	if span.Sender == nil {
+	span.ended = true
+	span.endTime = time.Now().UTC()
+	event := ss.SpanEvent{
+		Name:           span.name,
+		Application:    span.application,
+		TraceID:        span.traceID,
+		SpanID:         span.spanID,
+		ParentID:       span.parentID,
+		SpanKind:       span.kind,
+		StartTime:      span.startTime,
+		EndTime:        span.endTime,
+		HasError:       span.hasError,
+		StatusMessage:  span.statusMessage,
+		HTTPStatusCode: span.httpStatusCode,
+		Attributes:     cloneMap(span.attributes),
+		Events:         append([]ss.TimedEvent(nil), span.events...),
+	}
+	sender := span.sender
+	onEnd := span.onEnd
+	span.onEnd = nil
+	errorHandler := span.errorHandler
+	span.mutex.Unlock()
+
+	defer func() {
+		if onEnd != nil {
+			onEnd()
+		}
+	}()
+
+	if sender == nil {
 		return
 	}
-	_ = span.Sender.Send(ss.SpanEvent{
-		Name:           span.Name,
-		Application:    span.Application,
-		TraceID:        span.TraceID,
-		SpanID:         span.SpanID,
-		ParentID:       span.ParentID,
-		SpanKind:       span.Kind,
-		StartTime:      span.StartTime,
-		EndTime:        span.EndTime,
-		HasError:       span.HasError,
-		StatusMessage:  span.StatusMessage,
-		HTTPStatusCode: span.HTTPStatusCode,
-		Attributes:     cloneMap(span.Attributes),
-		Events:         append([]ss.TimedEvent(nil), span.Events...),
-	})
+	if err := sender.Send(event); err != nil {
+		reportError(errorHandler, fmt.Errorf("send span: %w", err))
+	}
 }
 
 // Set stores an attribute on the span.
@@ -148,15 +228,15 @@ func (span *Span) Set(key string, value any) {
 	if span == nil || key == "" {
 		return
 	}
-	span.Mutex.Lock()
-	defer span.Mutex.Unlock()
-	if span.Ended {
+	span.mutex.Lock()
+	defer span.mutex.Unlock()
+	if span.ended {
 		return
 	}
-	if span.Attributes == nil {
-		span.Attributes = map[string]any{}
+	if span.attributes == nil {
+		span.attributes = map[string]any{}
 	}
-	span.Attributes[key] = value
+	span.attributes[key] = value
 }
 
 // AddEvent attaches a point event to the span.
@@ -164,12 +244,12 @@ func (span *Span) AddEvent(name string, attrs map[string]any) {
 	if span == nil || name == "" {
 		return
 	}
-	span.Mutex.Lock()
-	defer span.Mutex.Unlock()
-	if span.Ended {
+	span.mutex.Lock()
+	defer span.mutex.Unlock()
+	if span.ended {
 		return
 	}
-	span.Events = append(span.Events, ss.TimedEvent{
+	span.events = append(span.events, ss.TimedEvent{
 		Name:       name,
 		Time:       time.Now().UTC(),
 		Attributes: cloneMap(attrs),
@@ -181,18 +261,18 @@ func (span *Span) RecordError(err error) {
 	if span == nil || err == nil {
 		return
 	}
-	span.Mutex.Lock()
-	defer span.Mutex.Unlock()
-	if span.Ended {
+	span.mutex.Lock()
+	defer span.mutex.Unlock()
+	if span.ended {
 		return
 	}
-	span.HasError = true
-	span.StatusMessage = err.Error()
-	if span.Attributes == nil {
-		span.Attributes = map[string]any{}
+	span.hasError = true
+	span.statusMessage = err.Error()
+	if span.attributes == nil {
+		span.attributes = map[string]any{}
 	}
-	span.Attributes["exception.message"] = err.Error()
-	span.Attributes["exception.type"] = fmt.Sprintf("%T", err)
+	span.attributes["exception.message"] = err.Error()
+	span.attributes["exception.type"] = fmt.Sprintf("%T", err)
 }
 
 // SetHTTPStatus records an HTTP status code.
@@ -200,20 +280,20 @@ func (span *Span) SetHTTPStatus(statusCode int) {
 	if span == nil || statusCode <= 0 {
 		return
 	}
-	span.Mutex.Lock()
-	defer span.Mutex.Unlock()
-	if span.Ended {
+	span.mutex.Lock()
+	defer span.mutex.Unlock()
+	if span.ended {
 		return
 	}
-	span.HTTPStatusCode = statusCode
-	if span.Attributes == nil {
-		span.Attributes = map[string]any{}
+	span.httpStatusCode = statusCode
+	if span.attributes == nil {
+		span.attributes = map[string]any{}
 	}
-	span.Attributes["http.status_code"] = statusCode
+	span.attributes["http.status_code"] = statusCode
 	if statusCode >= 500 {
-		span.HasError = true
-		if span.StatusMessage == "" {
-			span.StatusMessage = fmt.Sprintf("HTTP %d", statusCode)
+		span.hasError = true
+		if span.statusMessage == "" {
+			span.statusMessage = fmt.Sprintf("HTTP %d", statusCode)
 		}
 	}
 }
@@ -233,7 +313,7 @@ func FromContext(ctx context.Context) *Span {
 // IDsFromContext returns trace/span ids from ctx.
 func IDsFromContext(ctx context.Context) (traceID, spanID string, ok bool) {
 	if span := FromContext(ctx); span != nil {
-		return span.TraceID, span.SpanID, span.TraceID != ""
+		return span.traceID, span.spanID, span.traceID != ""
 	}
 	if ctx == nil {
 		return "", "", false
@@ -256,6 +336,7 @@ func Resume(ctx context.Context, traceID, parentSpanID string) context.Context {
 	return context.WithValue(ctx, remoteTraceKey, remoteTrace{traceID: traceID, spanID: parentSpanID})
 }
 
+// contextWithSpan stores span as the active span in ctx.
 func contextWithSpan(ctx context.Context, span *Span) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -263,9 +344,10 @@ func contextWithSpan(ctx context.Context, span *Span) context.Context {
 	return context.WithValue(ctx, activeSpanKey, span)
 }
 
+// parentFromContext returns the parent trace/span ids from ctx.
 func parentFromContext(ctx context.Context) (traceID, parentSpanID string, hasParent bool) {
-	if span := FromContext(ctx); span != nil && span.TraceID != "" {
-		return span.TraceID, span.SpanID, true
+	if span := FromContext(ctx); span != nil && span.traceID != "" {
+		return span.traceID, span.spanID, true
 	}
 	if ctx == nil {
 		return "", "", false
@@ -277,6 +359,7 @@ func parentFromContext(ctx context.Context) (traceID, parentSpanID string, hasPa
 	return "", "", false
 }
 
+// defaultKind returns kind, or server/internal when kind is empty.
 func defaultKind(kind string, hasParent bool) string {
 	if kind != "" {
 		return kind
@@ -287,6 +370,7 @@ func defaultKind(kind string, hasParent bool) string {
 	return "server"
 }
 
+// newTraceID creates a 32-character hex trace id.
 func newTraceID() (string, error) {
 	traceID, err := trace_id.New()
 	if err != nil {
@@ -295,6 +379,7 @@ func newTraceID() (string, error) {
 	return trace_id.RemoveDashes(traceID), nil
 }
 
+// newSpanID creates a 16-character hex span id.
 func newSpanID() (string, error) {
 	var randomBytes [8]byte
 	if _, err := rand.Read(randomBytes[:]); err != nil {
@@ -303,6 +388,7 @@ func newSpanID() (string, error) {
 	return hex.EncodeToString(randomBytes[:]), nil
 }
 
+// cloneMap returns a shallow copy of values.
 func cloneMap(values map[string]any) map[string]any {
 	if len(values) == 0 {
 		return nil
@@ -312,4 +398,12 @@ func cloneMap(values map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+// reportError invokes handler when both handler and err are non-nil.
+func reportError(handler func(error), err error) {
+	if handler == nil || err == nil {
+		return
+	}
+	handler(err)
 }

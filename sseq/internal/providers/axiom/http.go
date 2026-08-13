@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/SmilingXinyi/gb/sseq/internal"
@@ -54,28 +53,30 @@ func NewHTTP(token, dataset, domain, endpoint string) (*HTTP, error) {
 }
 
 // WritePayload delivers an NDJSON batch to Axiom.
-func (writer *HTTP) WritePayload(payload []byte) {
+func (writer *HTTP) WritePayload(payload []byte) error {
 	request, err := http.NewRequest(http.MethodPost, writer.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sseq: create axiom request: %v\n", err)
-		return
+		return fmt.Errorf("create axiom request: %w", err)
 	}
 	request.Header.Set("Content-Type", ingestContentType)
 	request.Header.Set("Authorization", "Bearer "+writer.token)
 
 	response, err := writer.httpClient.Do(request)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sseq: send axiom request: %v\n", err)
-		return
+		return fmt.Errorf("send axiom request: %w", err)
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, response.Body)
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		fmt.Fprintf(os.Stderr, "sseq: axiom unexpected status %d\n", response.StatusCode)
+	if !ss.IsSuccessStatus(response.StatusCode) {
+		return fmt.Errorf("axiom unexpected status %d", response.StatusCode)
 	}
+	return nil
 }
 
-// Close releases HTTP resources.
+// Close releases idle HTTP connections.
 func (writer *HTTP) Close() error {
+	if writer != nil && writer.httpClient != nil {
+		writer.httpClient.CloseIdleConnections()
+	}
 	return nil
 }

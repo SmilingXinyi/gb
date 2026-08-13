@@ -2,7 +2,7 @@ package file
 
 import (
 	"fmt"
-	"os"
+	"sync"
 
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
@@ -15,6 +15,7 @@ const (
 
 // Writer appends encoded span batches to a rotated file for Vector pickup.
 type Writer struct {
+	mutex  sync.Mutex
 	logger *lumberjack.Logger
 }
 
@@ -35,13 +36,34 @@ func NewWriter(filename string) (*Writer, error) {
 }
 
 // WritePayload appends a batch to the rotated file.
-func (writer *Writer) WritePayload(payload []byte) {
-	if _, err := writer.logger.Write(payload); err != nil {
-		fmt.Fprintf(os.Stderr, "sseq: write file: %v\n", err)
+func (writer *Writer) WritePayload(payload []byte) error {
+	if writer == nil {
+		return fmt.Errorf("file writer is nil")
 	}
+
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	if writer.logger == nil {
+		return fmt.Errorf("file writer is closed")
+	}
+	if _, err := writer.logger.Write(payload); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+	return nil
 }
 
-// Close releases file resources.
+// Close flushes and closes the rotated file.
 func (writer *Writer) Close() error {
-	return nil
+	if writer == nil {
+		return nil
+	}
+
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	if writer.logger == nil {
+		return nil
+	}
+	err := writer.logger.Close()
+	writer.logger = nil
+	return err
 }
