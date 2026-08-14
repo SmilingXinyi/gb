@@ -47,8 +47,6 @@ func (multilineEncoder) Encode(event SpanEvent) ([]byte, error) {
 func TestSenderFlushesOnBatchSize(t *testing.T) {
 	writer := &recordingWriter{}
 	sender := NewSender(BatchConfig{BatchSize: 2, FlushInterval: time.Hour}, identityEncoder{}, writer)
-	defer sender.Close()
-
 	if err := sender.Send(SpanEvent{Name: "one"}); err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -57,6 +55,9 @@ func TestSenderFlushesOnBatchSize(t *testing.T) {
 	}
 	if err := sender.Send(SpanEvent{Name: "two"}); err != nil {
 		t.Fatalf("Send() error = %v", err)
+	}
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 	if got := writer.joined(); got != "one\ntwo\n" {
 		t.Fatalf("payload = %q", got)
@@ -92,10 +93,11 @@ func TestSenderSendAfterClose(t *testing.T) {
 func TestSenderDoesNotDoubleCountTrailingNewline(t *testing.T) {
 	writer := &recordingWriter{}
 	sender := NewSender(BatchConfig{BatchSize: 2, FlushInterval: time.Hour}, multilineEncoder{}, writer)
-	defer sender.Close()
-
 	if err := sender.Send(SpanEvent{Name: "span"}); err != nil {
 		t.Fatalf("Send() error = %v", err)
+	}
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 	if got := writer.joined(); got != "span\nspan-event\n" {
 		t.Fatalf("payload = %q", got)
@@ -125,6 +127,60 @@ func TestSenderSerializesWrites(t *testing.T) {
 	if maxInflight.Load() != 1 {
 		t.Fatalf("max concurrent writes = %d, want 1", maxInflight.Load())
 	}
+}
+
+func TestSenderQueueDoesNotBlockWhenCapacityAvailable(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	writer := &gateWriter{started: started, release: release}
+	sender := NewSender(BatchConfig{
+		BatchSize:      1,
+		FlushInterval:  time.Hour,
+		WriteQueueSize: 2,
+	}, identityEncoder{}, writer)
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- sender.Send(SpanEvent{Name: "queued"})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not start")
+	}
+
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("Send() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Send blocked on slow writer while queue had capacity")
+	}
+
+	close(release)
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+type gateWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (writer *gateWriter) WritePayload(payload []byte) error {
+	writer.once.Do(func() {
+		close(writer.started)
+	})
+	<-writer.release
+	return nil
+}
+
+func (writer *gateWriter) Close() error {
+	return nil
 }
 
 func TestCountRecords(t *testing.T) {

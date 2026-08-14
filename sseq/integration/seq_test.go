@@ -38,7 +38,7 @@ func TestIntegrationSpanTreeWithSeqDocker(t *testing.T) {
 	if err := sseq.SetupSeq(seqIngestEndpoint, "", integrationApplication); err != nil {
 		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	traceID, err := runIntegrationSpanScenario()
 	if err != nil {

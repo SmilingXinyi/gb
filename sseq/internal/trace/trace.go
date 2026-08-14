@@ -24,8 +24,6 @@ type remoteTrace struct {
 	spanID  string
 }
 
-const defaultShutdownTimeout = 5 * time.Second
-
 // Tracer owns a sender and creates spans.
 type Tracer struct {
 	application     string
@@ -34,7 +32,9 @@ type Tracer struct {
 	errorHandler    func(error)
 	lifecycle       sync.RWMutex
 	closed          bool
-	active          sync.WaitGroup
+	idleMu          sync.Mutex
+	idle            *sync.Cond
+	activeCount     int
 }
 
 // Span is one operation in a trace.
@@ -62,14 +62,16 @@ type Span struct {
 // NewTracer creates a tracer that exports completed spans through sender.
 func NewTracer(application string, sender *ss.Sender, shutdownTimeout time.Duration, errorHandler func(error)) *Tracer {
 	if shutdownTimeout <= 0 {
-		shutdownTimeout = defaultShutdownTimeout
+		shutdownTimeout = ss.DefaultShutdownTimeout
 	}
-	return &Tracer{
+	tracer := &Tracer{
 		application:     application,
 		sender:          sender,
 		shutdownTimeout: shutdownTimeout,
 		errorHandler:    errorHandler,
 	}
+	tracer.idle = sync.NewCond(&tracer.idleMu)
+	return tracer
 }
 
 // Start begins a span and stores it in ctx.
@@ -89,9 +91,9 @@ func (tracer *Tracer) Start(ctx context.Context, name, kind string) (context.Con
 	tracer.lifecycle.RLock()
 	closed := tracer.closed
 	if !closed && tracer.sender != nil {
-		tracer.active.Add(1)
+		tracer.trackStart()
 		span.sender = tracer.sender
-		span.onEnd = tracer.active.Done
+		span.onEnd = tracer.trackEnd
 	}
 	tracer.lifecycle.RUnlock()
 
@@ -128,6 +130,12 @@ func (tracer *Tracer) Trace(ctx context.Context, name, kind string, fn func(cont
 	if fn == nil {
 		return nil
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			span.RecordError(fmt.Errorf("panic: %v", recovered))
+			panic(recovered)
+		}
+	}()
 	err := fn(ctx)
 	if err != nil {
 		span.RecordError(err)
@@ -149,21 +157,11 @@ func (tracer *Tracer) Close() error {
 	tracer.closed = true
 	tracer.lifecycle.Unlock()
 
-	done := make(chan struct{})
-	go func() {
-		tracer.active.Wait()
-		close(done)
-	}()
-
 	timeout := tracer.shutdownTimeout
 	if timeout <= 0 {
-		timeout = defaultShutdownTimeout
+		timeout = ss.DefaultShutdownTimeout
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-done:
-	case <-timer.C:
+	if !tracer.waitForIdle(timeout) {
 		reportError(tracer.errorHandler, fmt.Errorf("shutdown timed out after %s", timeout))
 	}
 
@@ -172,7 +170,56 @@ func (tracer *Tracer) Close() error {
 	}
 	err := tracer.sender.Close()
 	tracer.sender = nil
+	if err != nil {
+		reportError(tracer.errorHandler, fmt.Errorf("close sender: %w", err))
+	}
 	return err
+}
+
+// trackStart records that a span is in flight.
+func (tracer *Tracer) trackStart() {
+	tracer.idleMu.Lock()
+	tracer.activeCount++
+	tracer.idleMu.Unlock()
+}
+
+// trackEnd records that a span has ended and wakes Close when none remain.
+func (tracer *Tracer) trackEnd() {
+	tracer.idleMu.Lock()
+	if tracer.activeCount > 0 {
+		tracer.activeCount--
+	}
+	if tracer.activeCount == 0 && tracer.idle != nil {
+		tracer.idle.Broadcast()
+	}
+	tracer.idleMu.Unlock()
+}
+
+// waitForIdle waits until in-flight spans end or timeout elapses.
+func (tracer *Tracer) waitForIdle(timeout time.Duration) bool {
+	if tracer.idle == nil {
+		return true
+	}
+
+	tracer.idleMu.Lock()
+	defer tracer.idleMu.Unlock()
+	if tracer.activeCount == 0 {
+		return true
+	}
+
+	timedOut := false
+	timer := time.AfterFunc(timeout, func() {
+		tracer.idleMu.Lock()
+		timedOut = true
+		tracer.idle.Broadcast()
+		tracer.idleMu.Unlock()
+	})
+	defer timer.Stop()
+
+	for tracer.activeCount > 0 && !timedOut {
+		tracer.idle.Wait()
+	}
+	return tracer.activeCount == 0
 }
 
 // End completes the span and sends it.

@@ -41,7 +41,7 @@ func TestTraceHierarchy(t *testing.T) {
 	if err := sseq.SetupSeq(server.URL, "", "unit-test"); err != nil {
 		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	err := sseq.Trace(context.Background(), "root", "server", func(ctx context.Context) error {
 		return sseq.Trace(ctx, "child-a", "", func(ctx context.Context) error {
@@ -81,7 +81,7 @@ func TestTraceRecordsError(t *testing.T) {
 	if err := sseq.SetupSeq(server.URL, "", ""); err != nil {
 		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	expectedErr := errors.New("payment failed")
 	err := sseq.Trace(context.Background(), "charge", "", func(context.Context) error {
@@ -102,7 +102,7 @@ func TestSeqFileAndAttributes(t *testing.T) {
 	if err := sseq.SetupSeqFile(filename, "file-app"); err != nil {
 		t.Fatalf("SetupSeqFile() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	err := sseq.Trace(context.Background(), "root", "server", func(ctx context.Context) error {
 		sseq.Set(ctx, "user.id", "42")
@@ -125,7 +125,7 @@ func TestResume(t *testing.T) {
 	if err := sseq.SetupSeqFile(filename, ""); err != nil {
 		t.Fatalf("SetupSeqFile() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	var producerTraceID, producerSpanID string
 	err := sseq.Trace(context.Background(), "producer", "server", func(ctx context.Context) error {
@@ -157,7 +157,7 @@ func TestHTTPMiddleware(t *testing.T) {
 	if err := sseq.SetupSeq(server.URL, "", ""); err != nil {
 		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.WriteHeader(http.StatusOK)
@@ -166,8 +166,11 @@ func TestHTTPMiddleware(t *testing.T) {
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/users", nil))
 	sseq.Shutdown()
 
-	if !strings.Contains(receivedBody, `"@mt":"GET /api/users"`) {
+	if !strings.Contains(receivedBody, `"@mt":"GET"`) {
 		t.Fatalf("missing span: %q", receivedBody)
+	}
+	if strings.Contains(receivedBody, `"@mt":"GET /api/users"`) {
+		t.Fatalf("span name should not include the raw path: %q", receivedBody)
 	}
 	if !strings.Contains(receivedBody, `"StatusCode":200`) {
 		t.Fatalf("missing status: %q", receivedBody)
@@ -188,7 +191,7 @@ func TestReservedClefAttributesAreNotOverwritten(t *testing.T) {
 	if err := sseq.SetupSeqFile(filename, "file-app"); err != nil {
 		t.Fatalf("SetupSeqFile() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	err := sseq.Trace(context.Background(), "query users", "server", func(ctx context.Context) error {
 		sseq.Set(ctx, "@tr", "should-not-overwrite")
@@ -237,7 +240,7 @@ func TestSeqHTTPAcceptsStatusOK(t *testing.T) {
 	); err != nil {
 		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	if err := sseq.Trace(context.Background(), "ok", "", func(context.Context) error {
 		return nil
@@ -271,7 +274,7 @@ func TestShutdownWaitsForInFlightSpan(t *testing.T) {
 	if err := sseq.SetupSeq(server.URL, "", "drain", sseq.WithBatchSize(1)); err != nil {
 		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -327,7 +330,7 @@ func TestHTTPMiddlewarePanicMarksError(t *testing.T) {
 	if err := sseq.SetupSeq(server.URL, "", "panic", sseq.WithBatchSize(1)); err != nil {
 		t.Fatalf("SetupSeq() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	handler := sseq.HTTP(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
@@ -382,7 +385,7 @@ func TestInjectExtractTraceparent(t *testing.T) {
 	if err := sseq.SetupSeqFile(filename, "traceparent"); err != nil {
 		t.Fatalf("SetupSeqFile() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	header := make(http.Header)
 	err := sseq.Trace(context.Background(), "outbound", "client", func(ctx context.Context) error {
@@ -414,7 +417,7 @@ func TestHTTPMiddlewareContinuesRemoteTrace(t *testing.T) {
 	if err := sseq.SetupSeqFile(filename, "remote"); err != nil {
 		t.Fatalf("SetupSeqFile() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	remoteTraceID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	remoteSpanID := "bbbbbbbbbbbbbbbb"
@@ -447,6 +450,67 @@ func TestHTTPMiddlewareContinuesRemoteTrace(t *testing.T) {
 	if records[0]["http.target"] != "/users/42" {
 		t.Fatalf("http.target = %v", records[0]["http.target"])
 	}
+	if records[0]["@mt"] != "GET" {
+		t.Fatalf("@mt = %v, want GET", records[0]["@mt"])
+	}
+}
+
+func TestTracePanicMarksError(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "trace-panic.clef")
+	if err := sseq.SetupSeqFile(filename, "panic"); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected panic to propagate")
+			}
+		}()
+		_ = sseq.Trace(context.Background(), "work", "", func(context.Context) error {
+			panic("boom")
+		})
+	}()
+	if err := sseq.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	records := readJSONLines(t, filename)
+	if len(records) == 0 {
+		t.Fatal("expected span record")
+	}
+	if records[0]["@l"] != "Error" {
+		t.Fatalf("level = %v", records[0]["@l"])
+	}
+	if records[0]["ErrorMessage"] != "panic: boom" {
+		t.Fatalf("ErrorMessage = %v", records[0]["ErrorMessage"])
+	}
+}
+
+func TestWithErrorHandlerNilSilences(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "silent.clef")
+	if err := sseq.SetupSeqFile(filename, "silent", sseq.WithErrorHandler(nil)); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+	if err := sseq.Trace(context.Background(), "ok", "", func(context.Context) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+}
+
+func TestHTTPMiddlewareHidesHijackerWhenUnsupported(t *testing.T) {
+	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := response.(http.Hijacker); ok {
+			t.Error("wrapper should not implement http.Hijacker when the inner writer does not")
+		}
+		if _, ok := response.(http.Flusher); !ok {
+			t.Error("wrapper should implement http.Flusher when the inner writer does")
+		}
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 }
 
 type hijackableWriter struct {

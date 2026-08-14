@@ -54,8 +54,8 @@ sseq.SetupSeq(endpoint, apiKey, application,
 | `SetupSeqFile` / `SetupAxiomFile` | File export for Vector |
 | `WithBatchSize` / `WithFlushInterval` | Flush tuning |
 | `WithShutdownTimeout` | How long Shutdown waits for in-flight spans |
-| `WithErrorHandler` | Export and shutdown errors |
-| `Shutdown` | Wait, flush, and close |
+| `WithErrorHandler` | Export and shutdown errors; nil silences logs |
+| `Shutdown` | Wait, flush, and close (returns error) |
 | `Trace(ctx, name, kind, fn)` | Run work inside a span |
 | `Start(ctx, name, kind)` | Manual span; returns `(ctx, end)` |
 | `Set(ctx, key, value)` | Attribute on active span |
@@ -68,7 +68,9 @@ sseq.SetupSeq(endpoint, apiKey, application,
 
 `kind` may be empty: roots default to `server`, children to `internal`.
 
-The HTTP middleware records `http.method`, `http.target`, and `http.host`. Set `http.route` yourself when you have a low-cardinality template.
+The HTTP middleware names spans after the method only (`GET`, `POST`) and records `http.method`, `http.target`, and `http.host`. Set `http.route` yourself when you have a low-cardinality template.
+
+`Shutdown` returns an error from the final flush/close. `defer sseq.Shutdown()` still compiles; check the error when you need it. `WithErrorHandler(nil)` silences export logs.
 
 ## Async
 

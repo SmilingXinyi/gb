@@ -39,7 +39,7 @@ func TestIntegrationSpanTreeWithAxiom(t *testing.T) {
 	if err := sseq.SetupAxiom(token, dataset, integrationApplication); err != nil {
 		t.Fatalf("SetupAxiom() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	traceID, err := runIntegrationSpanScenario()
 	if err != nil {

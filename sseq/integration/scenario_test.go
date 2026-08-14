@@ -189,7 +189,7 @@ func TestIntegrationSpanScenarioClef(t *testing.T) {
 	if err := sseq.SetupSeqFile(filename, integrationApplication); err != nil {
 		t.Fatalf("SetupSeqFile() error = %v", err)
 	}
-	t.Cleanup(sseq.Shutdown)
+	t.Cleanup(func() { _ = sseq.Shutdown() })
 
 	traceID, err := runIntegrationSpanScenario()
 	if err != nil {

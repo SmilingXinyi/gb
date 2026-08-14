@@ -19,9 +19,12 @@ type Sender struct {
 	eventCount    int
 	mutex         sync.Mutex
 	writeMutex    sync.Mutex
+	writeCh       chan []byte
 	done          chan struct{}
 	closed        bool
 	flushLoopWait sync.WaitGroup
+	writeLoopWait sync.WaitGroup
+	enqueueWait   sync.WaitGroup
 }
 
 // NewSender creates a span sender that flushes by size or interval.
@@ -32,15 +35,21 @@ func NewSender(config BatchConfig, encoder Encoder, writer Writer) *Sender {
 	if config.FlushInterval <= 0 {
 		config.FlushInterval = DefaultFlushInterval
 	}
+	if config.WriteQueueSize <= 0 {
+		config.WriteQueueSize = DefaultWriteQueueSize
+	}
 
 	sender := &Sender{
 		config:  config,
 		encoder: encoder,
 		writer:  writer,
+		writeCh: make(chan []byte, config.WriteQueueSize),
 		done:    make(chan struct{}),
 	}
 	sender.flushLoopWait.Add(1)
 	go sender.runFlushLoop()
+	sender.writeLoopWait.Add(1)
+	go sender.runWriteLoop()
 	return sender
 }
 
@@ -79,10 +88,10 @@ func (sender *Sender) Send(event SpanEvent) error {
 	if len(flushed) == 0 {
 		return nil
 	}
-	return sender.write(flushed)
+	return sender.enqueue(flushed)
 }
 
-// Close flushes buffered events and releases the writer.
+// Close flushes buffered events, drains the write queue, and releases the writer.
 func (sender *Sender) Close() error {
 	if sender == nil {
 		return nil
@@ -94,19 +103,21 @@ func (sender *Sender) Close() error {
 		return nil
 	}
 	sender.closed = true
-	payload := sender.takeLocked()
+	remaining := sender.takeLocked()
 	sender.mutex.Unlock()
 
 	close(sender.done)
 	sender.flushLoopWait.Wait()
+	sender.enqueueWait.Wait()
 
 	var closeErr error
-	if len(payload) > 0 {
-		closeErr = sender.write(payload)
+	if len(remaining) > 0 {
+		if err := sender.enqueueRemaining(remaining); err != nil && closeErr == nil {
+			closeErr = err
+		}
 	}
-
-	sender.writeMutex.Lock()
-	sender.writeMutex.Unlock()
+	close(sender.writeCh)
+	sender.writeLoopWait.Wait()
 
 	if sender.writer != nil {
 		if err := sender.writer.Close(); err != nil && closeErr == nil {
@@ -132,6 +143,16 @@ func (sender *Sender) runFlushLoop() {
 	}
 }
 
+// runWriteLoop delivers queued payloads in a single worker.
+func (sender *Sender) runWriteLoop() {
+	defer sender.writeLoopWait.Done()
+	for payload := range sender.writeCh {
+		if err := sender.writeDirect(payload); err != nil {
+			sender.reportError(err)
+		}
+	}
+}
+
 // flush writes the current buffer if the sender is still open.
 func (sender *Sender) flush() {
 	sender.mutex.Lock()
@@ -142,7 +163,7 @@ func (sender *Sender) flush() {
 	payload := sender.takeLocked()
 	sender.mutex.Unlock()
 
-	if err := sender.write(payload); err != nil {
+	if err := sender.enqueue(payload); err != nil {
 		sender.reportError(err)
 	}
 }
@@ -158,8 +179,38 @@ func (sender *Sender) takeLocked() []byte {
 	return payload
 }
 
-// write delivers a payload through the writer, serializing concurrent flushes.
-func (sender *Sender) write(payload []byte) error {
+// enqueue queues a payload, or writes synchronously when the queue is full.
+func (sender *Sender) enqueue(payload []byte) error {
+	if len(payload) == 0 || sender.writer == nil {
+		return nil
+	}
+
+	sender.enqueueWait.Add(1)
+	defer sender.enqueueWait.Done()
+
+	select {
+	case sender.writeCh <- payload:
+		return nil
+	default:
+		return sender.writeDirect(payload)
+	}
+}
+
+// enqueueRemaining writes leftover buffered data during Close.
+func (sender *Sender) enqueueRemaining(payload []byte) error {
+	if len(payload) == 0 || sender.writer == nil {
+		return nil
+	}
+	select {
+	case sender.writeCh <- payload:
+		return nil
+	default:
+		return sender.writeDirect(payload)
+	}
+}
+
+// writeDirect delivers a payload through the writer, serializing concurrent flushes.
+func (sender *Sender) writeDirect(payload []byte) error {
 	if len(payload) == 0 || sender.writer == nil {
 		return nil
 	}

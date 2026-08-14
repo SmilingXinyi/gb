@@ -24,7 +24,10 @@ func HTTP(next http.Handler) http.Handler {
 			requestContext = Resume(requestContext, traceID, parentSpanID)
 		}
 
-		spanName := fmt.Sprintf("%s %s", request.Method, request.URL.Path)
+		spanName := request.Method
+		if spanName == "" {
+			spanName = "HTTP"
+		}
 		requestContext, span := defaultTracer().Start(requestContext, spanName, "server")
 		span.Set("http.method", request.Method)
 		span.Set("http.target", request.URL.RequestURI())
@@ -32,7 +35,7 @@ func HTTP(next http.Handler) http.Handler {
 			span.Set("http.host", request.Host)
 		}
 
-		recorder := &statusRecorder{responseWriter: response, statusCode: http.StatusOK}
+		wrapped, recorder := wrapResponseWriter(response)
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				span.RecordError(fmt.Errorf("panic: %v", recovered))
@@ -43,7 +46,7 @@ func HTTP(next http.Handler) http.Handler {
 			span.End()
 		}()
 
-		next.ServeHTTP(recorder, request.WithContext(requestContext))
+		next.ServeHTTP(wrapped, request.WithContext(requestContext))
 	})
 }
 
@@ -96,6 +99,34 @@ type statusRecorder struct {
 	wroteHeader    bool
 }
 
+// wrapResponseWriter returns a writer that records status and only exposes
+// optional interfaces implemented by the inner writer.
+func wrapResponseWriter(response http.ResponseWriter) (http.ResponseWriter, *statusRecorder) {
+	recorder := &statusRecorder{responseWriter: response, statusCode: http.StatusOK}
+	_, hasFlusher := response.(http.Flusher)
+	_, hasHijacker := response.(http.Hijacker)
+	_, hasPusher := response.(http.Pusher)
+
+	var wrapped http.ResponseWriter = recorder
+	switch {
+	case hasFlusher && hasHijacker && hasPusher:
+		wrapped = &flushHijackPushRecorder{statusRecorder: recorder}
+	case hasFlusher && hasHijacker:
+		wrapped = &flushHijackRecorder{statusRecorder: recorder}
+	case hasFlusher && hasPusher:
+		wrapped = &flushPushRecorder{statusRecorder: recorder}
+	case hasHijacker && hasPusher:
+		wrapped = &hijackPushRecorder{statusRecorder: recorder}
+	case hasFlusher:
+		wrapped = &flushRecorder{statusRecorder: recorder}
+	case hasHijacker:
+		wrapped = &hijackRecorder{statusRecorder: recorder}
+	case hasPusher:
+		wrapped = &pushRecorder{statusRecorder: recorder}
+	}
+	return wrapped, recorder
+}
+
 // Header returns the wrapped response headers.
 func (recorder *statusRecorder) Header() http.Header {
 	return recorder.responseWriter.Header()
@@ -124,15 +155,15 @@ func (recorder *statusRecorder) Unwrap() http.ResponseWriter {
 	return recorder.responseWriter
 }
 
-// Flush forwards Flush when the underlying writer supports it.
-func (recorder *statusRecorder) Flush() {
+// flush forwards Flush when the underlying writer supports it.
+func (recorder *statusRecorder) flush() {
 	if flusher, ok := recorder.responseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
 }
 
-// Hijack forwards Hijack when the underlying writer supports it.
-func (recorder *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+// hijack forwards Hijack when the underlying writer supports it.
+func (recorder *statusRecorder) hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hijacker, ok := recorder.responseWriter.(http.Hijacker)
 	if !ok {
 		return nil, nil, fmt.Errorf("sseq: ResponseWriter does not implement http.Hijacker")
@@ -140,13 +171,79 @@ func (recorder *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return hijacker.Hijack()
 }
 
-// Push forwards HTTP/2 server push when the underlying writer supports it.
-func (recorder *statusRecorder) Push(target string, options *http.PushOptions) error {
+// push forwards HTTP/2 server push when the underlying writer supports it.
+func (recorder *statusRecorder) push(target string, options *http.PushOptions) error {
 	pusher, ok := recorder.responseWriter.(http.Pusher)
 	if !ok {
 		return http.ErrNotSupported
 	}
 	return pusher.Push(target, options)
+}
+
+type flushRecorder struct{ *statusRecorder }
+
+// Flush implements http.Flusher.
+func (recorder *flushRecorder) Flush() { recorder.flush() }
+
+type hijackRecorder struct{ *statusRecorder }
+
+// Hijack implements http.Hijacker.
+func (recorder *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return recorder.hijack()
+}
+
+type pushRecorder struct{ *statusRecorder }
+
+// Push implements http.Pusher.
+func (recorder *pushRecorder) Push(target string, options *http.PushOptions) error {
+	return recorder.push(target, options)
+}
+
+type flushHijackRecorder struct{ *statusRecorder }
+
+// Flush implements http.Flusher.
+func (recorder *flushHijackRecorder) Flush() { recorder.flush() }
+
+// Hijack implements http.Hijacker.
+func (recorder *flushHijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return recorder.hijack()
+}
+
+type flushPushRecorder struct{ *statusRecorder }
+
+// Flush implements http.Flusher.
+func (recorder *flushPushRecorder) Flush() { recorder.flush() }
+
+// Push implements http.Pusher.
+func (recorder *flushPushRecorder) Push(target string, options *http.PushOptions) error {
+	return recorder.push(target, options)
+}
+
+type hijackPushRecorder struct{ *statusRecorder }
+
+// Hijack implements http.Hijacker.
+func (recorder *hijackPushRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return recorder.hijack()
+}
+
+// Push implements http.Pusher.
+func (recorder *hijackPushRecorder) Push(target string, options *http.PushOptions) error {
+	return recorder.push(target, options)
+}
+
+type flushHijackPushRecorder struct{ *statusRecorder }
+
+// Flush implements http.Flusher.
+func (recorder *flushHijackPushRecorder) Flush() { recorder.flush() }
+
+// Hijack implements http.Hijacker.
+func (recorder *flushHijackPushRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return recorder.hijack()
+}
+
+// Push implements http.Pusher.
+func (recorder *flushHijackPushRecorder) Push(target string, options *http.PushOptions) error {
+	return recorder.push(target, options)
 }
 
 // isHex reports whether value is lowercase hexadecimal of the given length.

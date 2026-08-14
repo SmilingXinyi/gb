@@ -57,13 +57,15 @@ func SetupAxiomFile(filename, application string, options ...Option) error {
 }
 
 // Shutdown waits for in-flight spans, flushes buffered events, and closes the sender.
-func Shutdown() {
+func Shutdown() error {
 	setupMutex.Lock()
 	defer setupMutex.Unlock()
-	if globalTracer != nil {
-		_ = globalTracer.Close()
-		globalTracer = nil
+	if globalTracer == nil {
+		return nil
 	}
+	err := globalTracer.Close()
+	globalTracer = nil
+	return err
 }
 
 // Trace runs fn inside a named span. kind may be empty for defaults

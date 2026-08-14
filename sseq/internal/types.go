@@ -40,15 +40,18 @@ type Writer interface {
 
 // BatchConfig controls asynchronous flush behavior.
 type BatchConfig struct {
-	BatchSize     int
-	FlushInterval time.Duration
-	OnError       func(error)
+	BatchSize      int
+	FlushInterval  time.Duration
+	WriteQueueSize int
+	OnError        func(error)
 }
 
 const (
-	DefaultBatchSize     = 20
-	DefaultFlushInterval = time.Second
-	DefaultHTTPTimeout   = 10 * time.Second
+	DefaultBatchSize       = 20
+	DefaultFlushInterval   = time.Second
+	DefaultHTTPTimeout     = 10 * time.Second
+	DefaultWriteQueueSize  = 2
+	DefaultShutdownTimeout = 5 * time.Second
 )
 
 // IsSuccessStatus reports whether statusCode is a 2xx HTTP status.

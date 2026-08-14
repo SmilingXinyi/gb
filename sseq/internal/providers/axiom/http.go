@@ -2,6 +2,7 @@ package axiom
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,9 +18,11 @@ const (
 
 // HTTP posts Axiom NDJSON batches to the ingest API.
 type HTTP struct {
-	endpoint   string
-	token      string
-	httpClient *http.Client
+	endpoint       string
+	token          string
+	httpClient     *http.Client
+	requestContext context.Context
+	cancel         context.CancelFunc
 }
 
 // NewHTTP creates an Axiom HTTP writer.
@@ -45,16 +48,19 @@ func NewHTTP(token, dataset, domain, endpoint string) (*HTTP, error) {
 		resolvedEndpoint = fmt.Sprintf("https://%s/v1/datasets/%s/ingest", resolvedDomain, dataset)
 	}
 
+	requestContext, cancel := context.WithCancel(context.Background())
 	return &HTTP{
-		endpoint:   resolvedEndpoint,
-		token:      token,
-		httpClient: &http.Client{Timeout: ss.DefaultHTTPTimeout},
+		endpoint:       resolvedEndpoint,
+		token:          token,
+		httpClient:     &http.Client{Timeout: ss.DefaultHTTPTimeout},
+		requestContext: requestContext,
+		cancel:         cancel,
 	}, nil
 }
 
 // WritePayload delivers an NDJSON batch to Axiom.
 func (writer *HTTP) WritePayload(payload []byte) error {
-	request, err := http.NewRequest(http.MethodPost, writer.endpoint, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(writer.requestContext, http.MethodPost, writer.endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("create axiom request: %w", err)
 	}
@@ -73,9 +79,15 @@ func (writer *HTTP) WritePayload(payload []byte) error {
 	return nil
 }
 
-// Close releases idle HTTP connections.
+// Close cancels in-flight requests and releases idle HTTP connections.
 func (writer *HTTP) Close() error {
-	if writer != nil && writer.httpClient != nil {
+	if writer == nil {
+		return nil
+	}
+	if writer.cancel != nil {
+		writer.cancel()
+	}
+	if writer.httpClient != nil {
 		writer.httpClient.CloseIdleConnections()
 	}
 	return nil

@@ -10,7 +10,7 @@ import (
 
 const (
 	// DefaultShutdownTimeout is how long Shutdown waits for in-flight spans.
-	DefaultShutdownTimeout = 5 * time.Second
+	DefaultShutdownTimeout = ss.DefaultShutdownTimeout
 )
 
 // Config controls batching, shutdown, and export error handling.
@@ -21,7 +21,8 @@ type Config struct {
 	FlushInterval time.Duration
 	// ShutdownTimeout is how long Shutdown waits for in-flight spans.
 	ShutdownTimeout time.Duration
-	// ErrorHandler receives export and shutdown errors. Nil uses stderr.
+	// ErrorHandler receives export and shutdown errors.
+	// Nil in DefaultConfig logs to stderr. WithErrorHandler(nil) silences logs.
 	ErrorHandler func(error)
 }
 
@@ -60,8 +61,13 @@ func WithShutdownTimeout(timeout time.Duration) Option {
 }
 
 // WithErrorHandler sets the callback used for export and shutdown errors.
+// Passing nil installs a no-op handler and silences the default stderr logger.
 func WithErrorHandler(handler func(error)) Option {
 	return func(config *Config) {
+		if handler == nil {
+			config.ErrorHandler = func(error) {}
+			return
+		}
 		config.ErrorHandler = handler
 	}
 }
