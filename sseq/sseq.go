@@ -7,7 +7,6 @@ package sseq
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sync"
 
 	"github.com/SmilingXinyi/gb/sseq/internal"
@@ -23,48 +22,50 @@ var (
 )
 
 // SetupSeq sends CLEF spans to Seq over HTTP.
-func SetupSeq(endpoint, apiKey, application string) error {
+func SetupSeq(endpoint, apiKey, application string, options ...Option) error {
 	if endpoint == "" {
 		return fmt.Errorf("sseq: seq endpoint is required")
 	}
-	return setup(application, seq.Encoder{}, seq.NewHTTP(endpoint, apiKey))
+	return setup(application, seq.Encoder{}, seq.NewHTTP(endpoint, apiKey), options...)
 }
 
 // SetupAxiom sends spans to Axiom over HTTP.
-func SetupAxiom(token, dataset, application string) error {
+func SetupAxiom(token, dataset, application string, options ...Option) error {
 	writer, err := axiom.NewHTTP(token, dataset, "", "")
 	if err != nil {
 		return fmt.Errorf("sseq: %w", err)
 	}
-	return setup(application, axiom.Encoder{}, writer)
+	return setup(application, axiom.Encoder{}, writer, options...)
 }
 
 // SetupSeqFile writes CLEF spans to a local file for Vector → Seq.
-func SetupSeqFile(filename, application string) error {
+func SetupSeqFile(filename, application string, options ...Option) error {
 	writer, err := file.NewWriter(filename)
 	if err != nil {
 		return fmt.Errorf("sseq: %w", err)
 	}
-	return setup(application, seq.Encoder{}, writer)
+	return setup(application, seq.Encoder{}, writer, options...)
 }
 
 // SetupAxiomFile writes Axiom NDJSON spans to a local file for Vector → Axiom.
-func SetupAxiomFile(filename, application string) error {
+func SetupAxiomFile(filename, application string, options ...Option) error {
 	writer, err := file.NewWriter(filename)
 	if err != nil {
 		return fmt.Errorf("sseq: %w", err)
 	}
-	return setup(application, axiom.Encoder{}, writer)
+	return setup(application, axiom.Encoder{}, writer, options...)
 }
 
-// Shutdown flushes buffered spans and closes the sender.
-func Shutdown() {
+// Shutdown waits for in-flight spans, flushes buffered events, and closes the sender.
+func Shutdown() error {
 	setupMutex.Lock()
 	defer setupMutex.Unlock()
-	if globalTracer != nil {
-		_ = globalTracer.Close()
-		globalTracer = nil
+	if globalTracer == nil {
+		return nil
 	}
+	err := globalTracer.Close()
+	globalTracer = nil
+	return err
 }
 
 // Trace runs fn inside a named span. kind may be empty for defaults
@@ -112,23 +113,10 @@ func Resume(ctx context.Context, traceID, parentSpanID string) context.Context {
 	return trace.Resume(ctx, traceID, parentSpanID)
 }
 
-// HTTP wraps an http.Handler and records each request as a server span.
-func HTTP(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		spanName := fmt.Sprintf("%s %s", request.Method, request.URL.Path)
-		requestContext, span := defaultTracer().Start(request.Context(), spanName, "server")
-		span.Set("http.method", request.Method)
-		span.Set("http.route", request.URL.Path)
-		span.Set("http.target", request.URL.RequestURI())
-		defer span.End()
+// setup replaces the global tracer with a sender built from encoder and writer.
+func setup(application string, encoder ss.Encoder, writer ss.Writer, options ...Option) error {
+	config := applyOptions(options...)
 
-		recorder := &statusRecorder{responseWriter: response, statusCode: http.StatusOK}
-		next.ServeHTTP(recorder, request.WithContext(requestContext))
-		span.SetHTTPStatus(recorder.statusCode)
-	})
-}
-
-func setup(application string, encoder ss.Encoder, writer ss.Writer) error {
 	setupMutex.Lock()
 	defer setupMutex.Unlock()
 
@@ -137,16 +125,17 @@ func setup(application string, encoder ss.Encoder, writer ss.Writer) error {
 		globalTracer = nil
 	}
 
-	globalTracer = &trace.Tracer{
-		Application: application,
-		Sender: ss.NewSender(ss.BatchConfig{
-			BatchSize:     ss.DefaultBatchSize,
-			FlushInterval: ss.DefaultFlushInterval,
-		}, encoder, writer),
-	}
+	sender := ss.NewSender(ss.BatchConfig{
+		BatchSize:     config.BatchSize,
+		FlushInterval: config.FlushInterval,
+		OnError:       config.ErrorHandler,
+	}, encoder, writer)
+
+	globalTracer = trace.NewTracer(application, sender, config.ShutdownTimeout, config.ErrorHandler)
 	return nil
 }
 
+// defaultTracer returns the configured tracer, or a no-op tracer when Setup has not run.
 func defaultTracer() *trace.Tracer {
 	setupMutex.RLock()
 	tracer := globalTracer
@@ -157,6 +146,7 @@ func defaultTracer() *trace.Tracer {
 	return &trace.Tracer{}
 }
 
+// pairsToMap converts alternating key/value arguments into a map.
 func pairsToMap(keyValues ...any) map[string]any {
 	if len(keyValues) == 0 {
 		return nil
@@ -173,22 +163,4 @@ func pairsToMap(keyValues ...any) map[string]any {
 		return nil
 	}
 	return result
-}
-
-type statusRecorder struct {
-	responseWriter http.ResponseWriter
-	statusCode     int
-}
-
-func (recorder *statusRecorder) Header() http.Header {
-	return recorder.responseWriter.Header()
-}
-
-func (recorder *statusRecorder) Write(body []byte) (int, error) {
-	return recorder.responseWriter.Write(body)
-}
-
-func (recorder *statusRecorder) WriteHeader(statusCode int) {
-	recorder.statusCode = statusCode
-	recorder.responseWriter.WriteHeader(statusCode)
 }

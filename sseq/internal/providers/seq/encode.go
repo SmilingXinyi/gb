@@ -58,11 +58,7 @@ func encodeSpan(event ss.SpanEvent) ([]byte, error) {
 	if event.HTTPStatusCode > 0 {
 		clefEvent["StatusCode"] = event.HTTPStatusCode
 	}
-	for key, value := range event.Attributes {
-		if key != "" {
-			clefEvent[key] = value
-		}
-	}
+	applyAttributes(clefEvent, event.Attributes)
 	payload, err := json.Marshal(clefEvent)
 	if err != nil {
 		return nil, fmt.Errorf("marshal clef span: %w", err)
@@ -85,16 +81,35 @@ func encodePoint(event ss.SpanEvent) ([]byte, error) {
 	if event.Application != "" {
 		clefEvent["Application"] = event.Application
 	}
-	for key, value := range event.Attributes {
-		if key != "" {
-			clefEvent[key] = value
-		}
-	}
+	applyAttributes(clefEvent, event.Attributes)
 	payload, err := json.Marshal(clefEvent)
 	if err != nil {
 		return nil, fmt.Errorf("marshal clef point event: %w", err)
 	}
 	return payload, nil
+}
+
+// applyAttributes copies user attributes, skipping CLEF reserved keys.
+func applyAttributes(clefEvent map[string]any, attributes map[string]any) {
+	for key, value := range attributes {
+		if !isSafeClefAttribute(key) {
+			continue
+		}
+		clefEvent[key] = value
+	}
+}
+
+// isSafeClefAttribute reports whether key may be written as a CLEF property.
+func isSafeClefAttribute(key string) bool {
+	if key == "" || strings.HasPrefix(key, "@") {
+		return false
+	}
+	switch key {
+	case "Application", "ErrorMessage", "StatusCode":
+		return false
+	default:
+		return true
+	}
 }
 
 func level(event ss.SpanEvent) string {
