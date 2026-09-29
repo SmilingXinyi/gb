@@ -14,6 +14,7 @@ import (
 
 	"github.com/SmilingXinyi/gb/oss"
 	_ "github.com/SmilingXinyi/gb/oss/baidu"
+	_ "github.com/SmilingXinyi/gb/oss/cloudflare"
 	_ "github.com/SmilingXinyi/gb/oss/tencent"
 )
 
@@ -34,6 +35,7 @@ type globalFlags struct {
 	endpoint  string
 	bucket    string
 	token     string
+	accountID string
 }
 
 func main() {
@@ -94,6 +96,7 @@ func splitLeadingFlagsAndCommand(arguments []string) (leadingFlags []string, com
 		"-endpoint": {}, "--endpoint": {},
 		"-bucket": {}, "--bucket": {},
 		"-token": {}, "--token": {},
+		"-account-id": {}, "--account-id": {},
 	}
 
 	index := 0
@@ -147,14 +150,15 @@ Commands:
   version                Print CLI version
 
 Global flags (also via env OSS_PROVIDER, OSS_ACCESS_KEY, OSS_SECRET_KEY,
-OSS_REGION, OSS_ENDPOINT, OSS_BUCKET, OSS_TOKEN):
-  -provider string       Provider name: baidu | tencent
+OSS_REGION, OSS_ENDPOINT, OSS_BUCKET, OSS_TOKEN, OSS_ACCOUNT_ID):
+  -provider string       Provider name: baidu | tencent | cloudflare
   -access-key string     Access key / SecretId
   -secret-key string     Secret key / SecretKey
-  -region string         Region (e.g. bj, ap-guangzhou)
+  -region string         Region (Baidu: bj; Cloudflare: auto | eu | fedramp)
   -endpoint string       Optional endpoint override
   -bucket string         Default bucket name
   -token string          Optional STS session token
+  -account-id string     Cloudflare account ID (R2)
 
 Command-specific flags:
   put:
@@ -169,6 +173,7 @@ Command-specific flags:
 Examples:
   gb-oss -provider baidu -bucket my-bucket put docs/a.txt ./a.txt
   gb-oss -provider tencent -bucket my-bucket-1250000000 get docs/a.txt
+  gb-oss -provider cloudflare -account-id "$ACCOUNT" -bucket my-bucket put docs/a.txt ./a.txt
   gb-oss -provider baidu list docs/ -delimiter /
   gb-oss -provider tencent sign-url docs/a.txt -expire 600
 `, version)
@@ -187,6 +192,7 @@ func newFlagSet(name string) (*flag.FlagSet, *globalFlags) {
 	flagSet.StringVar(&settings.endpoint, "endpoint", envOr("OSS_ENDPOINT", ""), "endpoint")
 	flagSet.StringVar(&settings.bucket, "bucket", envOr("OSS_BUCKET", ""), "bucket")
 	flagSet.StringVar(&settings.token, "token", envOr("OSS_TOKEN", ""), "STS token")
+	flagSet.StringVar(&settings.accountID, "account-id", envOr("OSS_ACCOUNT_ID", ""), "Cloudflare account ID")
 	return flagSet, settings
 }
 
@@ -220,6 +226,7 @@ func openClient(settings *globalFlags) (oss.Storage, error) {
 		Endpoint:  settings.endpoint,
 		Bucket:    settings.bucket,
 		Token:     settings.token,
+		AccountID: settings.accountID,
 	}
 	return oss.New(settings.provider, config)
 }
