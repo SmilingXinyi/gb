@@ -25,4 +25,10 @@ type Config struct {
 	// Bucket 默认操作的存储桶名称（可选）。
 	// 若设置，调用方可省略 bucket 参数；不设置则每次调用必须显式传入。
 	Bucket string
+
+	// AccountID is the Cloudflare account ID used by the R2 adapter.
+	// When Endpoint is empty, the adapter builds
+	// https://<AccountID>.r2.cloudflarestorage.com from this value.
+	// Other providers ignore this field.
+	AccountID string
 }

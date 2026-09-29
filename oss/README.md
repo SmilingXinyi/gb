@@ -6,7 +6,7 @@
 
 - **Provider-agnostic API**: Upload, download, list, stat, sign URLs, and copy objects through one interface.
 - **Pluggable adapters**: Register providers via blank imports; swap by changing the provider name.
-- **Implemented providers**: Baidu BOS, Tencent COS.
+- **Implemented providers**: Baidu BOS, Tencent COS, Cloudflare R2.
 - **Skeleton providers**: Aliyun OSS, AWS S3 (not yet implemented).
 
 ## Directory Structure
@@ -22,11 +22,13 @@ oss/
 ├── baidu/              # Baidu BOS adapter
 ├── aliyun/             # Aliyun OSS adapter (skeleton)
 ├── tencent/            # Tencent COS adapter
+├── cloudflare/         # Cloudflare R2 adapter
 ├── s3/                 # AWS S3 / S3-compatible adapter (skeleton)
 └── examples/
     ├── basic/          # Basic usage example
     ├── baidu/          # Baidu runnable example
-    └── tencent/        # Tencent runnable example
+    ├── tencent/        # Tencent runnable example
+    └── cloudflare/     # Cloudflare R2 runnable example
 ```
 
 ## Installation
@@ -117,6 +119,39 @@ Region to endpoint mapping (defaults to `bj` when empty):
 | `Bucket` | Default bucket (`{name}-{appid}`) | `my-bucket-1250000000` |
 | `Token` | SessionToken (optional) | — |
 
+### Cloudflare R2
+
+R2 is a dedicated provider (`cloudflare`). It uses the S3 API with SigV4 region `auto`. Object ACLs are rejected because R2 does not support them.
+
+| Field | Description | Example |
+| :--- | :--- | :--- |
+| `AccessKey` | R2 access key ID | `xxxxxxxx` |
+| `SecretKey` | R2 secret access key | `xxxxxxxx` |
+| `AccountID` | Cloudflare account ID. Required when `Endpoint` is empty | `abc123def456` |
+| `Region` | Jurisdiction: `auto` (default), `eu`, or `fedramp` | `auto` |
+| `Endpoint` | Full S3 API URL. Overrides `AccountID` and `Region` | `https://<account_id>.r2.cloudflarestorage.com` |
+| `Bucket` | Default bucket (optional) | `my-bucket` |
+| `Token` | Optional session token | — |
+
+Jurisdiction endpoints derived from `AccountID`:
+
+| Region | Endpoint |
+| :--- | :--- |
+| `auto` or empty | `https://<AccountID>.r2.cloudflarestorage.com` |
+| `eu` | `https://<AccountID>.eu.r2.cloudflarestorage.com` |
+| `fedramp` | `https://<AccountID>.fedramp.r2.cloudflarestorage.com` |
+
+```go
+import _ "github.com/SmilingXinyi/gb/oss/cloudflare"
+
+client, err := oss.New(oss.ProviderCloudflare, oss.Config{
+    AccessKey: "your-access-key-id",
+    SecretKey: "your-secret-access-key",
+    AccountID: "your-account-id",
+    Bucket:    "my-bucket",
+})
+```
+
 ## Testing
 
 ### Baidu BOS
@@ -162,6 +197,27 @@ go test ./tencent/ -v -run "TestIntegration"
 go run ./examples/tencent/
 ```
 
+### Cloudflare R2
+
+**Unit tests (no credentials required)**
+
+```bash
+go test ./cloudflare/ -count=1
+```
+
+**Integration tests**
+
+```bash
+cp cloudflare/.env.example cloudflare/.env
+go test ./cloudflare/ -v -run "TestIntegration"
+```
+
+**Example**
+
+```bash
+go run ./examples/cloudflare/
+```
+
 ## CLI (`gb-oss`)
 
 Build a local binary:
@@ -181,6 +237,9 @@ Common commands (credentials can also come from `OSS_*` env vars):
 ./gb-oss -provider baidu -bucket my-bucket stat docs/hello.txt
 ./gb-oss -provider baidu -bucket my-bucket list docs/
 ./gb-oss -provider baidu -bucket my-bucket sign-url docs/hello.txt -expire 600
+
+./gb-oss -provider cloudflare -account-id "$ACCOUNT" -access-key "$AK" -secret-key "$SK" \
+  -bucket my-bucket put docs/hello.txt ./hello.txt
 ```
 
 ### Releasing Linux packages
@@ -197,5 +256,6 @@ Adapters are not yet implemented; integration tests will be added when they are 
 > **Note**: Place each provider's `.env` file in its adapter directory:
 > - Baidu BOS: `baidu/.env`
 > - Tencent COS: `tencent/.env`
+> - Cloudflare R2: `cloudflare/.env`
 >
 > Integration tests are skipped automatically when `.env` is missing; unit tests always run.

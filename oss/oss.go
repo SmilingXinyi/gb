@@ -1,5 +1,5 @@
 // Package oss 提供统一的对象存储抽象层。
-// 支持多个云存储 provider（百度云、阿里云、腾讯云、AWS S3），
+// 支持多个云存储 provider（百度云、阿里云、腾讯云、AWS S3、Cloudflare R2），
 // 通过 Storage 接口屏蔽底层 SDK 差异，上层业务代码无需感知具体 provider。
 //
 // 基本用法：
@@ -18,10 +18,11 @@ import (
 type Provider string
 
 const (
-	ProviderBaidu   Provider = "baidu"   // 百度云 BOS
-	ProviderAliyun  Provider = "aliyun"  // 阿里云 OSS
-	ProviderTencent Provider = "tencent" // 腾讯云 COS
-	ProviderS3      Provider = "s3"      // AWS S3 或其他 S3 兼容存储
+	ProviderBaidu      Provider = "baidu"      // 百度云 BOS
+	ProviderAliyun     Provider = "aliyun"     // 阿里云 OSS
+	ProviderTencent    Provider = "tencent"    // 腾讯云 COS
+	ProviderS3         Provider = "s3"         // AWS S3 或其他 S3 兼容存储
+	ProviderCloudflare Provider = "cloudflare" // Cloudflare R2
 )
 
 // Storage 是对象存储服务的统一操作接口。

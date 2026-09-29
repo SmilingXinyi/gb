@@ -1,4 +1,5 @@
-// Package s3 是 AWS S3 及 S3 兼容存储（MinIO、Cloudflare R2、七牛云等）的 Storage 适配器。
+// Package s3 是 AWS S3 及 S3 兼容存储（MinIO、七牛云等）的 Storage 适配器。
+// Cloudflare R2 使用独立 provider：oss/cloudflare。
 // 通过在 init() 中调用 oss.Register(oss.ProviderS3, newAdapter) 完成自动注册。
 //
 // 依赖 SDK：github.com/aws/aws-sdk-go-v2
@@ -15,7 +16,7 @@
 //	Config.SecretKey  → AWS Secret Access Key
 //	Config.Token      → AWS Session Token（临时凭证时使用）
 //	Config.Region     → AWS Region（如 "us-east-1"）
-//	Config.Endpoint   → 自定义 Endpoint URL（MinIO、R2 等 S3 兼容服务必填）
+//	Config.Endpoint   → 自定义 Endpoint URL（MinIO 等 S3 兼容服务必填）
 //	Config.Bucket     → 默认 bucket（可选）
 package s3
 

@@ -86,6 +86,8 @@ func TestPrintUsage_WritesHelp(t *testing.T) {
 	assert.Contains(t, output, "put <key> <file>")
 	assert.Contains(t, output, "sign-url <key>")
 	assert.Contains(t, output, "-provider")
+	assert.Contains(t, output, "cloudflare")
+	assert.Contains(t, output, "-account-id")
 }
 
 // TestEnvOr_UsesFallback returns the fallback when the env var is unset.
