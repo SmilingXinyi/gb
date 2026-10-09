@@ -242,6 +242,8 @@ Common commands (credentials can also come from `OSS_*` env vars):
   -bucket my-bucket put docs/hello.txt ./hello.txt
 ```
 
+`put` and `get` draw a progress bar on stderr when it is attached to a terminal. The bar is hidden when stderr is redirected, and `-no-progress` turns it off explicitly. `get` issues one extra `stat` request to learn the total size; if that fails, the bar shows the byte count without a percentage.
+
 ### Releasing Linux packages
 
 Push a tag matching `oss/v*` (for example `oss/v0.1.0`). The `Release OSS CLI` workflow builds and publishes:

@@ -163,6 +163,9 @@ OSS_REGION, OSS_ENDPOINT, OSS_BUCKET, OSS_TOKEN, OSS_ACCOUNT_ID):
 Command-specific flags:
   put:
     -content-type string MIME type for the uploaded object
+    -no-progress         Hide the progress bar (shown on stderr in a terminal)
+  get:
+    -no-progress         Hide the progress bar (shown on stderr in a terminal)
   list:
     -delimiter string    Delimiter for directory-style listing (e.g. /)
     -max-keys int        Max keys per page (default 1000)
@@ -235,6 +238,7 @@ func openClient(settings *globalFlags) (oss.Storage, error) {
 func runPut(arguments []string) error {
 	flagSet, settings := newFlagSet("put")
 	contentType := flagSet.String("content-type", "", "object Content-Type")
+	noProgress := flagSet.Bool("no-progress", false, "hide the upload progress bar")
 	if err := flagSet.Parse(arguments); err != nil {
 		return err
 	}
@@ -266,9 +270,18 @@ func runPut(arguments []string) error {
 		options.ContentType = detectContentType(localPath)
 	}
 
+	var uploadSource io.Reader = file
+	var progress *progressReporter
+	if shouldShowProgress(*noProgress) {
+		progress = newProgressReporter(os.Stderr, "upload "+objectKey, fileInfo.Size())
+		uploadSource = &progressReadSeeker{reader: file, reporter: progress}
+	}
+
 	ctx := context.Background()
-	if err := client.Put(ctx, settings.bucket, objectKey, file, fileInfo.Size(), options); err != nil {
-		return err
+	putErr := client.Put(ctx, settings.bucket, objectKey, uploadSource, fileInfo.Size(), options)
+	progress.finish()
+	if putErr != nil {
+		return putErr
 	}
 	fmt.Printf("put ok: bucket=%s key=%s size=%d\n", settings.bucket, objectKey, fileInfo.Size())
 	return nil
@@ -277,6 +290,7 @@ func runPut(arguments []string) error {
 // runGet downloads an object to a local file or stdout.
 func runGet(arguments []string) error {
 	flagSet, settings := newFlagSet("get")
+	noProgress := flagSet.Bool("no-progress", false, "hide the download progress bar")
 	if err := flagSet.Parse(arguments); err != nil {
 		return err
 	}
@@ -292,14 +306,31 @@ func runGet(arguments []string) error {
 	}
 
 	ctx := context.Background()
+	showProgress := shouldShowProgress(*noProgress)
+	totalBytes := unknownTotalBytes
+	if showProgress {
+		// Stat is only needed for the percentage; if it fails the bar falls back to a byte counter.
+		if meta, statErr := client.Stat(ctx, settings.bucket, objectKey); statErr == nil {
+			totalBytes = meta.Size
+		}
+	}
+
 	body, err := client.Get(ctx, settings.bucket, objectKey)
 	if err != nil {
 		return err
 	}
 	defer body.Close()
 
+	var downloadSource io.Reader = body
+	var progress *progressReporter
+	if showProgress {
+		progress = newProgressReporter(os.Stderr, "download "+objectKey, totalBytes)
+		downloadSource = &progressReader{reader: body, reporter: progress}
+	}
+
 	if len(positionals) == 1 {
-		_, copyErr := io.Copy(os.Stdout, body)
+		_, copyErr := io.Copy(os.Stdout, downloadSource)
+		progress.finish()
 		return copyErr
 	}
 
@@ -316,7 +347,8 @@ func runGet(arguments []string) error {
 	}
 	defer outputFile.Close()
 
-	written, err := io.Copy(outputFile, body)
+	written, err := io.Copy(outputFile, downloadSource)
+	progress.finish()
 	if err != nil {
 		return err
 	}
