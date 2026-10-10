@@ -7,15 +7,27 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/term"
 )
 
 const (
-	// progressBarWidth is the number of cells in the bar drawn between brackets.
+	// progressBarWidth is the number of cells in the bar drawn between brackets on wide terminals.
 	progressBarWidth = 30
+	// minimumBarWidth is the smallest bar kept on narrow terminals before the label is shortened further.
+	minimumBarWidth = 10
+	// minimumLabelWidth is the label width the bar gives way to before the bar shrinks any further.
+	minimumLabelWidth = 20
 	// progressRefreshPeriod limits how often the progress line is redrawn.
 	progressRefreshPeriod = 100 * time.Millisecond
 	// unknownTotalBytes marks a transfer whose total size is not known in advance.
 	unknownTotalBytes = int64(-1)
+	// fallbackTerminalColumns is used when the terminal width cannot be read.
+	fallbackTerminalColumns = 80
+	// minimumKeyWidth is the smallest object key width that is still shown after the action word.
+	minimumKeyWidth = 4
+	// ellipsis marks the cut inside a label that was shortened to fit the terminal.
+	ellipsis = "..."
 )
 
 // progressReporter renders a single updating progress line on a writer.
@@ -29,16 +41,20 @@ type progressReporter struct {
 	lastRenderedAt time.Time
 	lastLineLength int
 	now            func() time.Time
+	columns        func() int
 }
 
-// newProgressReporter creates a reporter that measures elapsed time from the moment it is created.
-func newProgressReporter(writer io.Writer, label string, totalBytes int64) *progressReporter {
+// newProgressReporter creates a reporter that draws on the terminal and measures elapsed time from now.
+func newProgressReporter(terminal *os.File, label string, totalBytes int64) *progressReporter {
 	return &progressReporter{
-		writer:     writer,
+		writer:     terminal,
 		label:      label,
 		totalBytes: totalBytes,
 		startedAt:  time.Now(),
 		now:        time.Now,
+		columns: func() int {
+			return terminalColumns(terminal)
+		},
 	}
 }
 
@@ -81,8 +97,11 @@ func (reporter *progressReporter) renderIfDue() {
 }
 
 // render writes the current state over the previous line using a carriage return.
+// The line is kept shorter than the terminal, because a wrapped line cannot be overwritten by a carriage return.
 func (reporter *progressReporter) render(now time.Time) {
-	line := formatProgressLine(reporter.label, reporter.transferred, reporter.totalBytes, now.Sub(reporter.startedAt))
+	// One column is left free so the cursor never reaches the right edge and triggers an automatic wrap.
+	maxWidth := reporter.columns() - 1
+	line := formatProgressLine(reporter.label, reporter.transferred, reporter.totalBytes, now.Sub(reporter.startedAt), maxWidth)
 	lineLength := utf8.RuneCountInString(line)
 
 	padding := ""
@@ -94,17 +113,50 @@ func (reporter *progressReporter) render(now time.Time) {
 	reporter.lastLineLength = lineLength
 }
 
-// formatProgressLine builds the text for one progress update, with a bar when the total is known.
-func formatProgressLine(label string, transferred, totalBytes int64, elapsed time.Duration) string {
+// formatProgressLine builds the text for one progress update, never exceeding maxWidth runes.
+// The label is shortened first, so the bar and the counters stay visible on narrow terminals.
+func formatProgressLine(label string, transferred, totalBytes int64, elapsed time.Duration, maxWidth int) string {
+	barWidth := progressBarWidth
+	if totalBytes != unknownTotalBytes {
+		fixedWidth := utf8.RuneCountInString(formatProgressDetails(transferred, totalBytes, elapsed, 0))
+		barWidth = min(progressBarWidth, max(minimumBarWidth, maxWidth-fixedWidth-minimumLabelWidth))
+	}
+	details := formatProgressDetails(transferred, totalBytes, elapsed, barWidth)
+
+	labelBudget := maxWidth - utf8.RuneCountInString(details)
+	line := []rune(shortenLabel(label, labelBudget) + details)
+	if maxWidth >= 0 && len(line) > maxWidth {
+		line = line[:maxWidth]
+	}
+	return string(line)
+}
+
+// shortenLabel fits the label into width runes, keeping the action word such as "download" and cutting the object key.
+func shortenLabel(label string, width int) string {
+	if utf8.RuneCountInString(label) <= width {
+		return label
+	}
+	action, key, hasKey := strings.Cut(label, " ")
+	if !hasKey {
+		return truncateMiddle(label, width)
+	}
+	keyWidth := width - utf8.RuneCountInString(action) - 1
+	if keyWidth < minimumKeyWidth {
+		return truncateMiddle(label, width)
+	}
+	return action + " " + truncateMiddle(key, keyWidth)
+}
+
+// formatProgressDetails builds the part of the line that follows the label: bar, counters and speed.
+func formatProgressDetails(transferred, totalBytes int64, elapsed time.Duration, barWidth int) string {
 	speed := formatByteCount(bytesPerSecond(transferred, elapsed)) + "/s"
 	if totalBytes == unknownTotalBytes {
-		return fmt.Sprintf("%s  %s  %s", label, formatByteCount(transferred), speed)
+		return fmt.Sprintf("  %s  %s", formatByteCount(transferred), speed)
 	}
 
 	percent := percentOf(transferred, totalBytes)
-	return fmt.Sprintf("%s [%s] %3d%% %s / %s  %s",
-		label,
-		renderProgressBar(percent),
+	return fmt.Sprintf(" [%s] %3d%% %s / %s  %s",
+		renderProgressBar(percent, barWidth),
 		percent,
 		formatByteCount(transferred),
 		formatByteCount(totalBytes),
@@ -112,13 +164,32 @@ func formatProgressLine(label string, transferred, totalBytes int64, elapsed tim
 	)
 }
 
-// renderProgressBar draws a fixed-width bar where the leading arrow marks the current position.
-func renderProgressBar(percent int64) string {
-	filledCells := int(percent) * progressBarWidth / 100
-	if filledCells >= progressBarWidth {
-		return strings.Repeat("=", progressBarWidth)
+// truncateMiddle shortens text to width runes by keeping its start and end around an ellipsis.
+func truncateMiddle(text string, width int) string {
+	textRunes := []rune(text)
+	if width <= 0 {
+		return ""
 	}
-	return strings.Repeat("=", filledCells) + ">" + strings.Repeat(" ", progressBarWidth-filledCells-1)
+	if len(textRunes) <= width {
+		return text
+	}
+	ellipsisLength := len(ellipsis)
+	if width <= ellipsisLength {
+		return string(textRunes[:width])
+	}
+	keptLength := width - ellipsisLength
+	headLength := (keptLength + 1) / 2
+	tailLength := keptLength - headLength
+	return string(textRunes[:headLength]) + ellipsis + string(textRunes[len(textRunes)-tailLength:])
+}
+
+// renderProgressBar draws a bar of the given width where the leading arrow marks the current position.
+func renderProgressBar(percent int64, barWidth int) string {
+	filledCells := int(percent) * barWidth / 100
+	if filledCells >= barWidth {
+		return strings.Repeat("=", barWidth)
+	}
+	return strings.Repeat("=", filledCells) + ">" + strings.Repeat(" ", barWidth-filledCells-1)
 }
 
 // percentOf returns the completion percentage clamped to [0, 100]. An empty transfer counts as complete.
@@ -154,6 +225,15 @@ func formatByteCount(bytes int64) string {
 		unitIndex++
 	}
 	return fmt.Sprintf("%.1f %s", value, units[unitIndex])
+}
+
+// terminalColumns returns the width of the terminal attached to the file, or a fallback when it cannot be read.
+func terminalColumns(terminal *os.File) int {
+	width, _, err := term.GetSize(int(terminal.Fd()))
+	if err != nil || width <= 0 {
+		return fallbackTerminalColumns
+	}
+	return width
 }
 
 // progressReader reports every byte read through it to a progress reporter.
