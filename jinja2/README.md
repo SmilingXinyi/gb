@@ -1,5 +1,7 @@
 # jinja2
 
+English | [中文](README.zh-CN.md)
+
 Thin Jinja2 renderer for Go. It calls [gonja](https://github.com/nikolalohinski/gonja) and exposes string, file, and writer rendering with ordinary `map[string]any` data.
 
 ## Installation
