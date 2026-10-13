@@ -3,6 +3,7 @@ go 1.25.8
 use (
 	./config
 	./gsc
+	./jinja2
 	./jv
 	./llm
 	./log

@@ -9,6 +9,7 @@ GB is a collection of high-quality, reusable Golang base libraries and utilities
 | [log](./log) | High-performance structured logging built on zerolog, with colored console output and automatic log file rotation. | ✅ Stable |
 | [sseq](./sseq) | Seq-only span tree ingestion via CLEF (no console, no OTel). | 🆕 New |
 | [llm](./llm) | LLM wrapper built on [goai](https://github.com/zendev-sh/goai): fluent sessions, `Execute` / `ExecuteTo` / `Stream`. | ✅ Stable |
+| [jinja2](./jinja2) | Jinja2 renderer: a thin wrapper around [gonja](https://github.com/nikolalohinski/gonja) for string, file, and writer output. | 🆕 New |
 | [jv](./jv) | JSON Schema validator with embedded and external schema support. | ✅ Stable |
 | [trace_id](./trace_id) | UUID v7 trace ID generator: `New()` with dashes, `RemoveDashes()` for 32-char hex. | ✅ Stable |
 | [utils](./utils) | Shared utilities such as YAML loading and LLM structured schema generation. | ✅ Stable |
