@@ -30,12 +30,14 @@ func SetupSeq(endpoint, apiKey, application string, options ...Option) error {
 }
 
 // SetupAxiom sends spans to Axiom over HTTP.
+// WithAxiomDomain and WithAxiomEndpoint select the ingest host or a full URL.
 func SetupAxiom(token, dataset, application string, options ...Option) error {
-	writer, err := axiom.NewHTTP(token, dataset, "", "")
+	config := applyOptions(options...)
+	writer, err := axiom.NewHTTP(token, dataset, config.AxiomDomain, config.AxiomEndpoint)
 	if err != nil {
 		return fmt.Errorf("sseq: %w", err)
 	}
-	return setup(application, axiom.Encoder{}, writer, options...)
+	return setupWithConfig(application, axiom.Encoder{}, writer, config)
 }
 
 // SetupSeqFile writes CLEF spans to a local file for Vector → Seq.
@@ -57,15 +59,17 @@ func SetupAxiomFile(filename, application string, options ...Option) error {
 }
 
 // Shutdown waits for in-flight spans, flushes buffered events, and closes the sender.
+// The setup lock is released before waiting, so an in-flight span can still start child spans.
+// Spans started after Shutdown begins are not exported.
 func Shutdown() error {
 	setupMutex.Lock()
-	defer setupMutex.Unlock()
-	if globalTracer == nil {
+	tracer := globalTracer
+	globalTracer = nil
+	setupMutex.Unlock()
+	if tracer == nil {
 		return nil
 	}
-	err := globalTracer.Close()
-	globalTracer = nil
-	return err
+	return tracer.Close()
 }
 
 // Trace runs fn inside a named span. kind may be empty for defaults
@@ -109,29 +113,34 @@ func IDs(ctx context.Context) (traceID, spanID string, ok bool) {
 }
 
 // Resume continues a remote trace in ctx for async workers.
+// traceID must be 32 hex characters. parentSpanID must be empty or 16 hex characters.
+// Invalid ids leave ctx unchanged. Resumed traces are marked sampled.
 func Resume(ctx context.Context, traceID, parentSpanID string) context.Context {
-	return trace.Resume(ctx, traceID, parentSpanID)
+	return trace.Resume(ctx, traceID, parentSpanID, "")
 }
 
 // setup replaces the global tracer with a sender built from encoder and writer.
 func setup(application string, encoder ss.Encoder, writer ss.Writer, options ...Option) error {
-	config := applyOptions(options...)
+	return setupWithConfig(application, encoder, writer, applyOptions(options...))
+}
 
+// setupWithConfig installs a tracer and closes the previous one outside the setup lock.
+func setupWithConfig(application string, encoder ss.Encoder, writer ss.Writer, config Config) error {
 	setupMutex.Lock()
-	defer setupMutex.Unlock()
-
-	if globalTracer != nil {
-		_ = globalTracer.Close()
-		globalTracer = nil
-	}
-
+	previous := globalTracer
 	sender := ss.NewSender(ss.BatchConfig{
-		BatchSize:     config.BatchSize,
-		FlushInterval: config.FlushInterval,
-		OnError:       config.ErrorHandler,
+		BatchSize:      config.BatchSize,
+		FlushInterval:  config.FlushInterval,
+		WriteQueueSize: config.WriteQueueSize,
+		WriteAttempts:  config.WriteAttempts,
+		OnError:        config.ErrorHandler,
 	}, encoder, writer)
-
 	globalTracer = trace.NewTracer(application, sender, config.ShutdownTimeout, config.ErrorHandler)
+	setupMutex.Unlock()
+
+	if previous != nil {
+		_ = previous.Close()
+	}
 	return nil
 }
 

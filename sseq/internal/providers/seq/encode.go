@@ -95,7 +95,7 @@ func applyAttributes(clefEvent map[string]any, attributes map[string]any) {
 		if !isSafeClefAttribute(key) {
 			continue
 		}
-		clefEvent[key] = value
+		clefEvent[key] = ss.SanitizeValue(value)
 	}
 }
 

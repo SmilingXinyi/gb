@@ -30,8 +30,10 @@ err := sseq.Trace(ctx, "HTTP GET /api/users", "server", func(ctx context.Context
 // Seq over HTTP
 sseq.SetupSeq(endpoint, apiKey, application)
 
-// Axiom over HTTP
+// Axiom over HTTP. Domain defaults to api.axiom.co.
 sseq.SetupAxiom(token, dataset, application)
+sseq.SetupAxiom(token, dataset, application, sseq.WithAxiomDomain("api.eu.axiom.co"))
+sseq.SetupAxiom(token, dataset, application, sseq.WithAxiomEndpoint("https://example/ingest"))
 
 // File for Vector → Seq / Axiom
 sseq.SetupSeqFile("spans.clef", application)
@@ -42,6 +44,8 @@ sseq.SetupSeq(endpoint, apiKey, application,
     sseq.WithBatchSize(50),
     sseq.WithFlushInterval(2*time.Second),
     sseq.WithShutdownTimeout(3*time.Second),
+    sseq.WithWriteQueueSize(32),
+    sseq.WithWriteAttempts(3),
     sseq.WithErrorHandler(func(err error) { log.Println(err) }),
 )
 ```
@@ -53,6 +57,9 @@ sseq.SetupSeq(endpoint, apiKey, application,
 | `SetupSeq` / `SetupAxiom` | HTTP export |
 | `SetupSeqFile` / `SetupAxiomFile` | File export for Vector |
 | `WithBatchSize` / `WithFlushInterval` | Flush tuning |
+| `WithWriteQueueSize` | Queued batches before new ones are dropped |
+| `WithWriteAttempts` | Export attempts per batch; further retries stop after Shutdown |
+| `WithAxiomDomain` / `WithAxiomEndpoint` | Axiom region host or full ingest URL |
 | `WithShutdownTimeout` | How long Shutdown waits for in-flight spans |
 | `WithErrorHandler` | Export and shutdown errors; nil silences logs |
 | `Shutdown` | Wait, flush, and close (returns error) |
@@ -62,15 +69,28 @@ sseq.SetupSeq(endpoint, apiKey, application,
 | `Event(ctx, name, key, value, ...)` | Point event on active span |
 | `Error(ctx, err)` | Mark active span failed |
 | `IDs(ctx)` | Read trace/span ids |
-| `Resume(ctx, traceID, parentSpanID)` | Continue async work |
+| `Resume(ctx, traceID, parentSpanID)` | Continue async work. Invalid ids are ignored |
 | `HTTP(handler)` | HTTP middleware (server spans, W3C traceparent) |
 | `Inject` / `Extract` | W3C `traceparent` for outbound / inbound HTTP |
 
 `kind` may be empty: roots default to `server`, children to `internal`.
 
-The HTTP middleware names spans after the method only (`GET`, `POST`) and records `http.method`, `http.target`, and `http.host`. Set `http.route` yourself when you have a low-cardinality template.
+Attribute values that `encoding/json` cannot marshal, such as `NaN` or a channel, are replaced with a placeholder. The rest of the span is still exported.
 
-`Shutdown` returns an error from the final flush/close. `defer sseq.Shutdown()` still compiles; check the error when you need it. `WithErrorHandler(nil)` silences export logs.
+The HTTP middleware names spans after the method only (`GET`, `POST`) and records `http.method`, `http.target`, and `http.host`. `http.target` is the path only; the query string is omitted. Set `http.route` yourself when you have a low-cardinality template.
+
+Incoming W3C `traceparent` flags are stored on the span and written back by `Inject`. Locally created traces use flags `01`. `Resume` does not receive flags, so async work resumed from ids alone is marked sampled.
+
+## Timestamps
+
+Seq and Axiom keep each backend's own trace time:
+
+| Provider | Span timestamp | Start | Point events |
+|----------|----------------|-------|--------------|
+| Seq CLEF | `@t` is the end time | `@st` is the start time | `@t` is the event time |
+| Axiom | `_time` is the start time | `duration` is nanoseconds from start to end | `timestamp` is Unix nanoseconds |
+
+`Shutdown` returns an error from the final flush/close. It releases its lock before waiting, so an in-flight span can still finish. Spans started after `Shutdown` begins are not exported. `defer sseq.Shutdown()` still compiles; check the error when you need it. `WithErrorHandler(nil)` silences export logs.
 
 ## Async
 

@@ -68,6 +68,43 @@ func TestCloseWaitsForInFlightSpan(t *testing.T) {
 	}
 }
 
+func TestResumeRejectsInvalidIDs(t *testing.T) {
+	ctx := Resume(context.Background(), "not-a-trace", "bbbbbbbbbbbbbbbb", "01")
+	if _, _, ok := IDsFromContext(ctx); ok {
+		t.Fatal("expected invalid trace id to be ignored")
+	}
+
+	ctx = Resume(context.Background(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "short", "01")
+	if _, _, ok := IDsFromContext(ctx); ok {
+		t.Fatal("expected invalid parent span id to be ignored")
+	}
+
+	ctx = Resume(context.Background(), "00000000000000000000000000000000", "bbbbbbbbbbbbbbbb", "01")
+	if _, _, ok := IDsFromContext(ctx); ok {
+		t.Fatal("expected all-zero trace id to be ignored")
+	}
+}
+
+func TestResumeKeepsFlagsAndNormalizesIDs(t *testing.T) {
+	ctx := Resume(context.Background(), "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB", "00")
+	traceID, spanID, ok := IDsFromContext(ctx)
+	if !ok {
+		t.Fatal("expected resumed trace")
+	}
+	if traceID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || spanID != "bbbbbbbbbbbbbbbb" {
+		t.Fatalf("ids = (%s, %s)", traceID, spanID)
+	}
+	if FlagsFromContext(ctx) != "00" {
+		t.Fatalf("flags = %q", FlagsFromContext(ctx))
+	}
+
+	tracer := NewTracer("test", nil, time.Second, nil)
+	childCtx, _ := tracer.Start(ctx, "child", "")
+	if FlagsFromContext(childCtx) != "00" {
+		t.Fatalf("child flags = %q", FlagsFromContext(childCtx))
+	}
+}
+
 type identityEncoder struct{}
 
 func (identityEncoder) Encode(event ss.SpanEvent) ([]byte, error) {

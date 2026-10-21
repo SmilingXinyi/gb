@@ -21,6 +21,15 @@ type Config struct {
 	FlushInterval time.Duration
 	// ShutdownTimeout is how long Shutdown waits for in-flight spans.
 	ShutdownTimeout time.Duration
+	// WriteQueueSize is how many encoded batches can wait for the export worker.
+	// A full queue drops the new batch instead of blocking the caller.
+	WriteQueueSize int
+	// WriteAttempts is how many times an export worker sends one batch before dropping it.
+	WriteAttempts int
+	// AxiomDomain overrides the Axiom ingest host. Empty uses api.axiom.co.
+	AxiomDomain string
+	// AxiomEndpoint overrides the full Axiom ingest URL.
+	AxiomEndpoint string
 	// ErrorHandler receives export and shutdown errors.
 	// Nil in DefaultConfig logs to stderr. WithErrorHandler(nil) silences logs.
 	ErrorHandler func(error)
@@ -35,6 +44,8 @@ func DefaultConfig() Config {
 		BatchSize:       ss.DefaultBatchSize,
 		FlushInterval:   ss.DefaultFlushInterval,
 		ShutdownTimeout: DefaultShutdownTimeout,
+		WriteQueueSize:  ss.DefaultWriteQueueSize,
+		WriteAttempts:   ss.DefaultWriteAttempts,
 		ErrorHandler:    defaultErrorHandler,
 	}
 }
@@ -57,6 +68,36 @@ func WithFlushInterval(interval time.Duration) Option {
 func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(config *Config) {
 		config.ShutdownTimeout = timeout
+	}
+}
+
+// WithWriteQueueSize sets how many encoded batches can wait for the export worker.
+func WithWriteQueueSize(size int) Option {
+	return func(config *Config) {
+		config.WriteQueueSize = size
+	}
+}
+
+// WithWriteAttempts sets how many times an export worker sends one batch before dropping it.
+func WithWriteAttempts(attempts int) Option {
+	return func(config *Config) {
+		config.WriteAttempts = attempts
+	}
+}
+
+// WithAxiomDomain sets the Axiom ingest host used by SetupAxiom.
+// An empty domain keeps api.axiom.co. The value may include a scheme.
+func WithAxiomDomain(domain string) Option {
+	return func(config *Config) {
+		config.AxiomDomain = domain
+	}
+}
+
+// WithAxiomEndpoint sets the full Axiom ingest URL used by SetupAxiom.
+// A non-empty endpoint overrides the domain and dataset path.
+func WithAxiomEndpoint(endpoint string) Option {
+	return func(config *Config) {
+		config.AxiomEndpoint = endpoint
 	}
 }
 
@@ -89,6 +130,12 @@ func applyOptions(options ...Option) Config {
 	}
 	if config.ShutdownTimeout <= 0 {
 		config.ShutdownTimeout = DefaultShutdownTimeout
+	}
+	if config.WriteQueueSize <= 0 {
+		config.WriteQueueSize = ss.DefaultWriteQueueSize
+	}
+	if config.WriteAttempts <= 0 {
+		config.WriteAttempts = ss.DefaultWriteAttempts
 	}
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = defaultErrorHandler

@@ -37,7 +37,7 @@ func (Encoder) Encode(event ss.SpanEvent) ([]byte, error) {
 		axiomEvent["http.status_code"] = event.HTTPStatusCode
 	}
 	if len(event.Attributes) > 0 {
-		axiomEvent["attributes"] = event.Attributes
+		axiomEvent["attributes"] = ss.SanitizeAttributes(event.Attributes)
 	}
 	if len(event.Events) > 0 {
 		axiomEvent["events"] = encodeEvents(event.Events)
@@ -58,7 +58,7 @@ func encodeEvents(events []ss.TimedEvent) []map[string]any {
 			"timestamp": timedEvent.Time.UTC().UnixNano(),
 		}
 		if len(timedEvent.Attributes) > 0 {
-			item["attributes"] = timedEvent.Attributes
+			item["attributes"] = ss.SanitizeAttributes(timedEvent.Attributes)
 		}
 		encoded = append(encoded, item)
 	}

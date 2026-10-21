@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/SmilingXinyi/gb/sseq/internal/trace"
 )
 
 const (
@@ -20,8 +22,8 @@ const (
 func HTTP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		requestContext := request.Context()
-		if traceID, parentSpanID, ok := Extract(request.Header); ok {
-			requestContext = Resume(requestContext, traceID, parentSpanID)
+		if traceID, parentSpanID, traceFlags, ok := parseTraceparent(request.Header); ok {
+			requestContext = trace.Resume(requestContext, traceID, parentSpanID, traceFlags)
 		}
 
 		spanName := request.Method
@@ -30,7 +32,7 @@ func HTTP(next http.Handler) http.Handler {
 		}
 		requestContext, span := defaultTracer().Start(requestContext, spanName, "server")
 		span.Set("http.method", request.Method)
-		span.Set("http.target", request.URL.RequestURI())
+		span.Set("http.target", requestTarget(request))
 		if request.Host != "" {
 			span.Set("http.host", request.Host)
 		}
@@ -64,33 +66,63 @@ func Inject(ctx context.Context, header http.Header) {
 	if !isHex(traceID, 32) || !isHex(spanID, 16) || isAllZero(traceID) || isAllZero(spanID) {
 		return
 	}
-	header.Set(traceparentHeader, traceparentVersion+"-"+traceID+"-"+spanID+"-"+traceparentFlags)
+	traceFlags := trace.FlagsFromContext(ctx)
+	if !isHex(traceFlags, 2) {
+		traceFlags = traceparentFlags
+	}
+	header.Set(traceparentHeader, traceparentVersion+"-"+traceID+"-"+spanID+"-"+traceFlags)
 }
 
 // Extract reads a W3C traceparent header.
 func Extract(header http.Header) (traceID, spanID string, ok bool) {
+	traceID, spanID, _, ok = parseTraceparent(header)
+	return
+}
+
+// parseTraceparent reads a W3C traceparent header.
+// Version 00 requires exactly four fields. Later versions may append fields.
+// Version ff is rejected.
+func parseTraceparent(header http.Header) (traceID, spanID, traceFlags string, ok bool) {
 	if header == nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	value := strings.TrimSpace(header.Get(traceparentHeader))
 	if value == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(value, "-")
-	if len(parts) != 4 {
-		return "", "", false
+	if len(parts) < 4 {
+		return "", "", "", false
 	}
 	version := strings.ToLower(parts[0])
+	if version == "ff" || !isHex(version, 2) {
+		return "", "", "", false
+	}
+	if version == traceparentVersion && len(parts) != 4 {
+		return "", "", "", false
+	}
 	headerTraceID := strings.ToLower(parts[1])
 	headerSpanID := strings.ToLower(parts[2])
-	flags := strings.ToLower(parts[3])
-	if !isHex(version, 2) || !isHex(headerTraceID, 32) || !isHex(headerSpanID, 16) || !isHex(flags, 2) {
-		return "", "", false
+	traceFlags = strings.ToLower(parts[3])
+	if !isHex(headerTraceID, 32) || !isHex(headerSpanID, 16) || !isHex(traceFlags, 2) {
+		return "", "", "", false
 	}
 	if isAllZero(headerTraceID) || isAllZero(headerSpanID) {
-		return "", "", false
+		return "", "", "", false
 	}
-	return headerTraceID, headerSpanID, true
+	return headerTraceID, headerSpanID, traceFlags, true
+}
+
+// requestTarget returns the URL path without the query string.
+func requestTarget(request *http.Request) string {
+	if request == nil || request.URL == nil {
+		return "/"
+	}
+	target := request.URL.EscapedPath()
+	if target == "" {
+		return "/"
+	}
+	return target
 }
 
 type statusRecorder struct {

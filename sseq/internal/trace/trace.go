@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,16 +13,21 @@ import (
 	"github.com/SmilingXinyi/gb/trace_id"
 )
 
+const defaultTraceFlags = "01"
+
 type contextKey struct{}
+
+type remoteTraceKeyType struct{}
 
 var (
 	activeSpanKey  = contextKey{}
-	remoteTraceKey = struct{}{}
+	remoteTraceKey = remoteTraceKeyType{}
 )
 
 type remoteTrace struct {
 	traceID string
 	spanID  string
+	flags   string
 }
 
 // Tracer owns a sender and creates spans.
@@ -44,6 +50,7 @@ type Span struct {
 	traceID        string
 	spanID         string
 	parentID       string
+	traceFlags     string
 	kind           string
 	startTime      time.Time
 	endTime        time.Time
@@ -77,7 +84,12 @@ func NewTracer(application string, sender *ss.Sender, shutdownTimeout time.Durat
 // Start begins a span and stores it in ctx.
 func (tracer *Tracer) Start(ctx context.Context, name, kind string) (context.Context, *Span) {
 	if tracer == nil {
-		return ctx, &Span{name: name, startTime: time.Now().UTC(), kind: defaultKind(kind, false)}
+		return ctx, &Span{
+			name:       name,
+			startTime:  time.Now().UTC(),
+			kind:       defaultKind(kind, false),
+			traceFlags: defaultTraceFlags,
+		}
 	}
 
 	span := &Span{
@@ -97,10 +109,11 @@ func (tracer *Tracer) Start(ctx context.Context, name, kind string) (context.Con
 	}
 	tracer.lifecycle.RUnlock()
 
-	parentTraceID, parentSpanID, hasParent := parentFromContext(ctx)
+	parentTraceID, parentSpanID, parentFlags, hasParent := parentFromContext(ctx)
 	if hasParent {
 		span.traceID = parentTraceID
 		span.parentID = parentSpanID
+		span.traceFlags = parentFlags
 		if span.kind == "" {
 			span.kind = "internal"
 		}
@@ -110,9 +123,13 @@ func (tracer *Tracer) Start(ctx context.Context, name, kind string) (context.Con
 			traceID = "00000000000000000000000000000000"
 		}
 		span.traceID = traceID
+		span.traceFlags = defaultTraceFlags
 		if span.kind == "" {
 			span.kind = "server"
 		}
+	}
+	if span.traceFlags == "" {
+		span.traceFlags = defaultTraceFlags
 	}
 
 	spanID, err := newSpanID()
@@ -373,14 +390,43 @@ func IDsFromContext(ctx context.Context) (traceID, spanID string, ok bool) {
 }
 
 // Resume attaches remote trace ids to ctx.
-func Resume(ctx context.Context, traceID, parentSpanID string) context.Context {
+// traceID must be 32 hex characters and parentSpanID must be empty or 16 hex characters.
+// All-zero ids are rejected. Invalid input leaves ctx unchanged.
+// Empty traceFlags records the span as sampled.
+func Resume(ctx context.Context, traceID, parentSpanID, traceFlags string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	traceID = normalizeHexID(traceID, 32)
 	if traceID == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, remoteTraceKey, remoteTrace{traceID: traceID, spanID: parentSpanID})
+	if parentSpanID != "" {
+		parentSpanID = normalizeHexID(parentSpanID, 16)
+		if parentSpanID == "" {
+			return ctx
+		}
+	}
+	return context.WithValue(ctx, remoteTraceKey, remoteTrace{
+		traceID: traceID,
+		spanID:  parentSpanID,
+		flags:   normalizeTraceFlags(traceFlags),
+	})
+}
+
+// FlagsFromContext returns the W3C trace flags stored on the active span or remote trace.
+func FlagsFromContext(ctx context.Context) string {
+	if span := FromContext(ctx); span != nil && span.traceFlags != "" {
+		return span.traceFlags
+	}
+	if ctx == nil {
+		return ""
+	}
+	remote, found := ctx.Value(remoteTraceKey).(remoteTrace)
+	if !found {
+		return ""
+	}
+	return remote.flags
 }
 
 // contextWithSpan stores span as the active span in ctx.
@@ -391,19 +437,60 @@ func contextWithSpan(ctx context.Context, span *Span) context.Context {
 	return context.WithValue(ctx, activeSpanKey, span)
 }
 
-// parentFromContext returns the parent trace/span ids from ctx.
-func parentFromContext(ctx context.Context) (traceID, parentSpanID string, hasParent bool) {
+// parentFromContext returns the parent trace id, span id, and flags from ctx.
+func parentFromContext(ctx context.Context) (traceID, parentSpanID, traceFlags string, hasParent bool) {
 	if span := FromContext(ctx); span != nil && span.traceID != "" {
-		return span.traceID, span.spanID, true
+		return span.traceID, span.spanID, span.traceFlags, true
 	}
 	if ctx == nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	remote, found := ctx.Value(remoteTraceKey).(remoteTrace)
 	if found && remote.traceID != "" {
-		return remote.traceID, remote.spanID, true
+		return remote.traceID, remote.spanID, remote.flags, true
 	}
-	return "", "", false
+	return "", "", "", false
+}
+
+// normalizeHexID returns a lowercase hex id of the given length, or empty when it is invalid.
+func normalizeHexID(value string, length int) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if !isHexID(normalized, length) || isAllZeroID(normalized) {
+		return ""
+	}
+	return normalized
+}
+
+// normalizeTraceFlags returns a 2-digit lowercase flag, or the sampled default.
+func normalizeTraceFlags(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if !isHexID(normalized, 2) {
+		return defaultTraceFlags
+	}
+	return normalized
+}
+
+// isHexID reports whether value is hexadecimal of the given length.
+func isHexID(value string, length int) bool {
+	if len(value) != length {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// isAllZeroID reports whether value contains only the character '0'.
+func isAllZeroID(value string) bool {
+	for _, character := range value {
+		if character != '0' {
+			return false
+		}
+	}
+	return len(value) > 0
 }
 
 // defaultKind returns kind, or server/internal when kind is empty.

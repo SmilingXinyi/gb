@@ -501,6 +501,267 @@ func TestWithErrorHandlerNilSilences(t *testing.T) {
 	}
 }
 
+func TestShutdownLetsInFlightSpanOpenChild(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "shutdown-child.clef")
+	if err := sseq.SetupSeqFile(filename, "app",
+		sseq.WithBatchSize(1),
+		sseq.WithShutdownTimeout(2*time.Second),
+		sseq.WithErrorHandler(func(error) {}),
+	); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+
+	parentEntered := make(chan struct{})
+	startChild := make(chan struct{})
+	childEntered := make(chan struct{})
+	traceDone := make(chan struct{})
+	go func() {
+		defer close(traceDone)
+		_ = sseq.Trace(context.Background(), "parent", "server", func(ctx context.Context) error {
+			close(parentEntered)
+			<-startChild
+			return sseq.Trace(ctx, "child", "internal", func(context.Context) error {
+				close(childEntered)
+				return nil
+			})
+		})
+	}()
+	<-parentEntered
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- sseq.Shutdown()
+	}()
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("Shutdown returned before the parent ended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(startChild)
+	select {
+	case <-childEntered:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("child span blocked during Shutdown")
+	}
+	select {
+	case <-traceDone:
+	case <-time.After(time.Second):
+		t.Fatal("parent trace did not finish")
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not return after the parent ended")
+	}
+
+	records := readJSONLines(t, filename)
+	if !spanNamed(records, "parent") {
+		t.Fatalf("parent span missing: %+v", records)
+	}
+}
+
+func TestSetupReplacementLetsInFlightSpanContinue(t *testing.T) {
+	directory := t.TempDir()
+	first := filepath.Join(directory, "first.clef")
+	second := filepath.Join(directory, "second.clef")
+	if err := sseq.SetupSeqFile(first, "app",
+		sseq.WithBatchSize(1),
+		sseq.WithShutdownTimeout(2*time.Second),
+		sseq.WithErrorHandler(func(error) {}),
+	); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+
+	parentEntered := make(chan struct{})
+	startChild := make(chan struct{})
+	childEntered := make(chan struct{})
+	traceDone := make(chan struct{})
+	go func() {
+		defer close(traceDone)
+		_ = sseq.Trace(context.Background(), "parent", "server", func(ctx context.Context) error {
+			close(parentEntered)
+			<-startChild
+			return sseq.Trace(ctx, "child", "internal", func(context.Context) error {
+				close(childEntered)
+				return nil
+			})
+		})
+	}()
+	<-parentEntered
+
+	setupDone := make(chan error, 1)
+	go func() {
+		setupDone <- sseq.SetupSeqFile(second, "app", sseq.WithBatchSize(1), sseq.WithErrorHandler(func(error) {}))
+	}()
+	select {
+	case err := <-setupDone:
+		t.Fatalf("Setup returned before the parent ended: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(startChild)
+	select {
+	case <-childEntered:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("child span blocked during Setup")
+	}
+	select {
+	case <-traceDone:
+	case <-time.After(time.Second):
+		t.Fatal("parent trace did not finish")
+	}
+	select {
+	case err := <-setupDone:
+		if err != nil {
+			t.Fatalf("SetupSeqFile() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Setup did not return after the parent ended")
+	}
+	if err := sseq.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	if !spanNamed(readJSONLines(t, first), "parent") {
+		t.Fatal("parent span missing from the original exporter")
+	}
+	if !spanInFile(t, first, "child") && !spanInFile(t, second, "child") {
+		t.Fatal("child span was not exported")
+	}
+}
+
+func TestHTTPTargetOmitsQuery(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "query.clef")
+	if err := sseq.SetupSeqFile(filename, "http", sseq.WithBatchSize(1)); err != nil {
+		t.Fatalf("SetupSeqFile() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+
+	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/users/42?token=secret", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if err := sseq.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	records := readJSONLines(t, filename)
+	if len(records) == 0 {
+		t.Fatal("expected span record")
+	}
+	if records[0]["http.target"] != "/users/42" {
+		t.Fatalf("http.target = %v", records[0]["http.target"])
+	}
+	encoded, err := json.Marshal(records[0])
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if strings.Contains(string(encoded), "secret") {
+		t.Fatalf("query secret was exported: %s", encoded)
+	}
+}
+
+func TestInjectPreservesRemoteTraceFlags(t *testing.T) {
+	traceID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	parentSpanID := "bbbbbbbbbbbbbbbb"
+	request := httptest.NewRequest(http.MethodGet, "/users", nil)
+	request.Header.Set("traceparent", "00-"+traceID+"-"+parentSpanID+"-00")
+
+	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		header := make(http.Header)
+		sseq.Inject(request.Context(), header)
+		traceparent := header.Get("traceparent")
+		parts := strings.Split(traceparent, "-")
+		if len(parts) != 4 || parts[0] != "00" || parts[1] != traceID || parts[3] != "00" {
+			t.Fatalf("traceparent = %q", traceparent)
+		}
+		if parts[2] == parentSpanID {
+			t.Fatal("outbound parent id should be the local span id")
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+}
+
+func TestExtractTraceparentVersions(t *testing.T) {
+	traceID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	spanID := "bbbbbbbbbbbbbbbb"
+
+	future := http.Header{}
+	future.Set("traceparent", "01-"+traceID+"-"+spanID+"-00-vendor")
+	extractedTraceID, extractedSpanID, ok := sseq.Extract(future)
+	if !ok || extractedTraceID != traceID || extractedSpanID != spanID {
+		t.Fatalf("future header extracted (%s, %s, %v)", extractedTraceID, extractedSpanID, ok)
+	}
+
+	versionZeroExtra := http.Header{}
+	versionZeroExtra.Set("traceparent", "00-"+traceID+"-"+spanID+"-01-extra")
+	if _, _, ok := sseq.Extract(versionZeroExtra); ok {
+		t.Fatal("version 00 with extra fields should be rejected")
+	}
+
+	forbidden := http.Header{}
+	forbidden.Set("traceparent", "ff-"+traceID+"-"+spanID+"-01")
+	if _, _, ok := sseq.Extract(forbidden); ok {
+		t.Fatal("version ff should be rejected")
+	}
+}
+
+func TestResumeRejectsInvalidIDs(t *testing.T) {
+	ctx := sseq.Resume(context.Background(), "not-a-trace", "bbbbbbbbbbbbbbbb")
+	if _, _, ok := sseq.IDs(ctx); ok {
+		t.Fatal("expected invalid resume to be ignored")
+	}
+
+	ctx = sseq.Resume(context.Background(), "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB")
+	traceID, spanID, ok := sseq.IDs(ctx)
+	if !ok || traceID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || spanID != "bbbbbbbbbbbbbbbb" {
+		t.Fatalf("resumed ids = (%s, %s, %v)", traceID, spanID, ok)
+	}
+}
+
+func TestSetupAxiomEndpoint(t *testing.T) {
+	var received bool
+	var mutex sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		mutex.Lock()
+		received = true
+		mutex.Unlock()
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := sseq.SetupAxiom("token", "logs", "axiom-app",
+		sseq.WithAxiomEndpoint(server.URL),
+		sseq.WithBatchSize(1),
+		sseq.WithErrorHandler(func(error) {}),
+	); err != nil {
+		t.Fatalf("SetupAxiom() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+
+	if err := sseq.Trace(context.Background(), "axiom", "", func(context.Context) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+	if err := sseq.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if !received {
+		t.Fatal("custom Axiom endpoint was not called")
+	}
+}
+
 func TestHTTPMiddlewareHidesHijackerWhenUnsupported(t *testing.T) {
 	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := response.(http.Hijacker); ok {
@@ -521,6 +782,24 @@ type hijackableWriter struct {
 func (writer *hijackableWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	writer.hijacked = true
 	return nil, nil, fmt.Errorf("hijack not connected")
+}
+
+func spanInFile(t *testing.T, filename, name string) bool {
+	t.Helper()
+	info, err := os.Stat(filename)
+	if err != nil || info.Size() == 0 {
+		return false
+	}
+	return spanNamed(readJSONLines(t, filename), name)
+}
+
+func spanNamed(records []map[string]any, name string) bool {
+	for _, record := range records {
+		if record["@mt"] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func readJSONLines(t *testing.T, filename string) []map[string]any {
