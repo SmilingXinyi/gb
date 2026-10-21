@@ -166,9 +166,11 @@ func TestSenderQueueDoesNotBlockWhenCapacityAvailable(t *testing.T) {
 }
 
 type gateWriter struct {
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	started  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+	mutex    sync.Mutex
+	payloads [][]byte
 }
 
 func (writer *gateWriter) WritePayload(payload []byte) error {
@@ -176,11 +178,156 @@ func (writer *gateWriter) WritePayload(payload []byte) error {
 		close(writer.started)
 	})
 	<-writer.release
+	writer.mutex.Lock()
+	writer.payloads = append(writer.payloads, append([]byte(nil), payload...))
+	writer.mutex.Unlock()
 	return nil
 }
 
 func (writer *gateWriter) Close() error {
 	return nil
+}
+
+func (writer *gateWriter) joinedPayloads() string {
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	return string(bytes.Join(writer.payloads, nil))
+}
+
+type flakyWriter struct {
+	mutex    sync.Mutex
+	failures int
+	calls    int
+	payloads [][]byte
+}
+
+func (writer *flakyWriter) WritePayload(payload []byte) error {
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	writer.calls++
+	if writer.calls <= writer.failures {
+		return errors.New("temporary write failure")
+	}
+	writer.payloads = append(writer.payloads, append([]byte(nil), payload...))
+	return nil
+}
+
+func (writer *flakyWriter) Close() error {
+	return nil
+}
+
+func (writer *flakyWriter) joined() string {
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	return string(bytes.Join(writer.payloads, nil))
+}
+
+func TestSenderDropsWhenQueueIsFull(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	writer := &gateWriter{started: started, release: release}
+	sender := NewSender(BatchConfig{
+		BatchSize:      1,
+		FlushInterval:  time.Hour,
+		WriteQueueSize: 1,
+		WriteAttempts:  1,
+	}, identityEncoder{}, writer)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- sender.Send(SpanEvent{Name: "first"})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not start")
+	}
+
+	if err := sender.Send(SpanEvent{Name: "second"}); err != nil {
+		t.Fatalf("queued Send() error = %v", err)
+	}
+	startedDrop := time.Now()
+	err := sender.Send(SpanEvent{Name: "third"})
+	if time.Since(startedDrop) > 200*time.Millisecond {
+		t.Fatalf("full queue blocked the caller for %s", time.Since(startedDrop))
+	}
+	if !errors.Is(err, ErrWriteQueueFull) {
+		t.Fatalf("Send() error = %v, want ErrWriteQueueFull", err)
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Send() error = %v", err)
+	}
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	got := writer.joinedPayloads()
+	if !bytes.Contains([]byte(got), []byte("first")) || !bytes.Contains([]byte(got), []byte("second")) {
+		t.Fatalf("payload = %q", got)
+	}
+	if bytes.Contains([]byte(got), []byte("third")) {
+		t.Fatalf("dropped payload was written: %q", got)
+	}
+}
+
+func TestSenderRetriesFailedWrite(t *testing.T) {
+	writer := &flakyWriter{failures: 2}
+	sender := NewSender(BatchConfig{
+		BatchSize:     1,
+		FlushInterval: time.Hour,
+		WriteAttempts: 3,
+	}, identityEncoder{}, writer)
+	if err := sender.Send(SpanEvent{Name: "retry"}); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		writer.mutex.Lock()
+		calls := writer.calls
+		writer.mutex.Unlock()
+		if calls >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := sender.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	writer.mutex.Lock()
+	calls := writer.calls
+	writer.mutex.Unlock()
+	if calls != 3 {
+		t.Fatalf("write calls = %d, want 3", calls)
+	}
+	if writer.joined() != "retry\n" {
+		t.Fatalf("payload = %q", writer.joined())
+	}
+}
+
+func TestSendCloseRace(t *testing.T) {
+	for round := 0; round < 100; round++ {
+		sender := NewSender(BatchConfig{
+			BatchSize:     1,
+			FlushInterval: time.Hour,
+			WriteAttempts: 1,
+		}, identityEncoder{}, &recordingWriter{})
+		started := make(chan struct{})
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() {
+			defer wait.Done()
+			<-started
+			_ = sender.Send(SpanEvent{Name: "span"})
+		}()
+		go func() {
+			defer wait.Done()
+			<-started
+			_ = sender.Close()
+		}()
+		close(started)
+		wait.Wait()
+	}
 }
 
 func TestCountRecords(t *testing.T) {

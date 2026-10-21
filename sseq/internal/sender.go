@@ -3,12 +3,18 @@ package ss
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
 
+const writeRetryBackoff = 100 * time.Millisecond
+
 // ErrSenderClosed is returned when Send is called after Close.
 var ErrSenderClosed = errors.New("sender is closed")
+
+// ErrWriteQueueFull is returned when a batch cannot be queued and is dropped.
+var ErrWriteQueueFull = errors.New("write queue is full")
 
 // Sender batches encoded spans and flushes them through a Writer.
 type Sender struct {
@@ -37,6 +43,9 @@ func NewSender(config BatchConfig, encoder Encoder, writer Writer) *Sender {
 	}
 	if config.WriteQueueSize <= 0 {
 		config.WriteQueueSize = DefaultWriteQueueSize
+	}
+	if config.WriteAttempts <= 0 {
+		config.WriteAttempts = DefaultWriteAttempts
 	}
 
 	sender := &Sender{
@@ -83,9 +92,10 @@ func (sender *Sender) Send(event SpanEvent) error {
 	if sender.eventCount >= sender.config.BatchSize {
 		flushed = sender.takeLocked()
 	}
+	tracked := sender.trackEnqueueLocked(flushed)
 	sender.mutex.Unlock()
 
-	if len(flushed) == 0 {
+	if !tracked {
 		return nil
 	}
 	return sender.enqueue(flushed)
@@ -147,7 +157,7 @@ func (sender *Sender) runFlushLoop() {
 func (sender *Sender) runWriteLoop() {
 	defer sender.writeLoopWait.Done()
 	for payload := range sender.writeCh {
-		if err := sender.writeDirect(payload); err != nil {
+		if err := sender.writeWithRetry(payload); err != nil {
 			sender.reportError(err)
 		}
 	}
@@ -161,8 +171,12 @@ func (sender *Sender) flush() {
 		return
 	}
 	payload := sender.takeLocked()
+	tracked := sender.trackEnqueueLocked(payload)
 	sender.mutex.Unlock()
 
+	if !tracked {
+		return
+	}
 	if err := sender.enqueue(payload); err != nil {
 		sender.reportError(err)
 	}
@@ -179,20 +193,24 @@ func (sender *Sender) takeLocked() []byte {
 	return payload
 }
 
-// enqueue queues a payload, or writes synchronously when the queue is full.
-func (sender *Sender) enqueue(payload []byte) error {
+// trackEnqueueLocked counts one in-flight enqueue.
+// The caller must hold mutex. A true result must be followed by one enqueue call.
+func (sender *Sender) trackEnqueueLocked(payload []byte) bool {
 	if len(payload) == 0 || sender.writer == nil {
-		return nil
+		return false
 	}
-
 	sender.enqueueWait.Add(1)
-	defer sender.enqueueWait.Done()
+	return true
+}
 
+// enqueue delivers a payload that trackEnqueueLocked already counted.
+func (sender *Sender) enqueue(payload []byte) error {
+	defer sender.enqueueWait.Done()
 	select {
 	case sender.writeCh <- payload:
 		return nil
 	default:
-		return sender.writeDirect(payload)
+		return fmt.Errorf("%w: dropped %d records", ErrWriteQueueFull, countRecords(payload))
 	}
 }
 
@@ -206,6 +224,61 @@ func (sender *Sender) enqueueRemaining(payload []byte) error {
 		return nil
 	default:
 		return sender.writeDirect(payload)
+	}
+}
+
+// writeWithRetry sends a payload, retrying while the sender is still open.
+func (sender *Sender) writeWithRetry(payload []byte) error {
+	attempts := sender.config.WriteAttempts
+	if attempts <= 0 {
+		attempts = DefaultWriteAttempts
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		lastErr = sender.writeDirect(payload)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == attempts || sender.isClosed() {
+			return lastErr
+		}
+		if !sender.waitRetry(attempt) {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+// isClosed reports whether Close has started.
+func (sender *Sender) isClosed() bool {
+	select {
+	case <-sender.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// waitRetry pauses before the next attempt. It returns false when Close has started.
+func (sender *Sender) waitRetry(attempt int) bool {
+	shift := attempt - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > 3 {
+		shift = 3
+	}
+	delay := writeRetryBackoff << shift
+	if delay > time.Second {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-sender.done:
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

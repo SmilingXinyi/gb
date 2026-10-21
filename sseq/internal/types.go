@@ -43,14 +43,18 @@ type BatchConfig struct {
 	BatchSize      int
 	FlushInterval  time.Duration
 	WriteQueueSize int
-	OnError        func(error)
+	// WriteAttempts is how many times a queued batch is sent before it is dropped.
+	// Values below 1 use DefaultWriteAttempts. Closing the sender stops further retries.
+	WriteAttempts int
+	OnError       func(error)
 }
 
 const (
 	DefaultBatchSize       = 20
 	DefaultFlushInterval   = time.Second
 	DefaultHTTPTimeout     = 10 * time.Second
-	DefaultWriteQueueSize  = 2
+	DefaultWriteQueueSize  = 32
+	DefaultWriteAttempts   = 3
 	DefaultShutdownTimeout = 5 * time.Second
 )
 

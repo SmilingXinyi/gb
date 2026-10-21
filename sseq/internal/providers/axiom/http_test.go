@@ -15,6 +15,24 @@ func TestHTTPRejectsMissingCredentials(t *testing.T) {
 	}
 }
 
+func TestHTTPUsesDomainOrEndpoint(t *testing.T) {
+	writer, err := NewHTTP("token", "logs", "api.eu.axiom.co", "")
+	if err != nil {
+		t.Fatalf("NewHTTP() error = %v", err)
+	}
+	if writer.endpoint != "https://api.eu.axiom.co/v1/datasets/logs/ingest" {
+		t.Fatalf("endpoint = %q", writer.endpoint)
+	}
+
+	writer, err = NewHTTP("token", "logs", "api.axiom.co", "https://example.test/ingest")
+	if err != nil {
+		t.Fatalf("NewHTTP() error = %v", err)
+	}
+	if writer.endpoint != "https://example.test/ingest" {
+		t.Fatalf("endpoint = %q", writer.endpoint)
+	}
+}
+
 func TestHTTPWritePayloadSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != "Bearer token" {
