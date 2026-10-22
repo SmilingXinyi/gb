@@ -30,6 +30,12 @@ type Config struct {
 	AxiomDomain string
 	// AxiomEndpoint overrides the full Axiom ingest URL.
 	AxiomEndpoint string
+	// Headers are extra HTTP headers sent by SetupOTLP.
+	// Content-Type remains application/json.
+	Headers map[string]string
+	// ResourceAttributes are added to the OTLP resource.
+	// SetupOTLP's service name is written to service.name and wins over this map.
+	ResourceAttributes map[string]any
 	// ErrorHandler receives export and shutdown errors.
 	// Nil in DefaultConfig logs to stderr. WithErrorHandler(nil) silences logs.
 	ErrorHandler func(error)
@@ -98,6 +104,22 @@ func WithAxiomDomain(domain string) Option {
 func WithAxiomEndpoint(endpoint string) Option {
 	return func(config *Config) {
 		config.AxiomEndpoint = endpoint
+	}
+}
+
+// WithHeaders sets HTTP headers sent with each OTLP export request.
+// Use it for authorization. Content-Type stays application/json.
+func WithHeaders(headers map[string]string) Option {
+	return func(config *Config) {
+		config.Headers = headers
+	}
+}
+
+// WithResourceAttributes adds resource attributes to each OTLP span.
+// A service name passed to SetupOTLP still owns service.name.
+func WithResourceAttributes(attributes map[string]any) Option {
+	return func(config *Config) {
+		config.ResourceAttributes = attributes
 	}
 }
 
