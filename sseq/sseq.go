@@ -1,7 +1,7 @@
 // Package sseq is a lightweight tracing SDK for Go.
 //
 // Core flow: Setup → Trace/Start → attributes/events → Shutdown.
-// Spans are exported to Seq or Axiom over HTTP, or written to a file for Vector.
+// Spans are exported to Seq, Axiom, or an OTLP/HTTP endpoint, or written to a file for Vector.
 package sseq
 
 import (
@@ -12,6 +12,7 @@ import (
 	"github.com/SmilingXinyi/gb/sseq/internal"
 	"github.com/SmilingXinyi/gb/sseq/internal/file"
 	"github.com/SmilingXinyi/gb/sseq/internal/providers/axiom"
+	"github.com/SmilingXinyi/gb/sseq/internal/providers/otlp"
 	"github.com/SmilingXinyi/gb/sseq/internal/providers/seq"
 	"github.com/SmilingXinyi/gb/sseq/internal/trace"
 )
@@ -38,6 +39,20 @@ func SetupAxiom(token, dataset, application string, options ...Option) error {
 		return fmt.Errorf("sseq: %w", err)
 	}
 	return setupWithConfig(application, axiom.Encoder{}, writer, config)
+}
+
+// SetupOTLP sends spans to an OTLP/HTTP JSON endpoint.
+// endpoint is the full traces URL, for example http://localhost:4318/v1/traces.
+// serviceName is written to the resource attribute service.name.
+// WithHeaders adds request headers. WithResourceAttributes adds resource attributes.
+func SetupOTLP(endpoint, serviceName string, options ...Option) error {
+	if endpoint == "" {
+		return fmt.Errorf("sseq: otlp endpoint is required")
+	}
+	config := applyOptions(options...)
+	encoder := otlp.NewEncoder(serviceName, config.ResourceAttributes)
+	writer := otlp.NewHTTP(endpoint, config.Headers)
+	return setupWithConfig(serviceName, encoder, writer, config)
 }
 
 // SetupSeqFile writes CLEF spans to a local file for Vector → Seq.

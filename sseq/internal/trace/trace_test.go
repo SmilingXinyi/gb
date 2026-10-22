@@ -68,6 +68,21 @@ func TestCloseWaitsForInFlightSpan(t *testing.T) {
 	}
 }
 
+func TestGeneratedIDsAreW3CHex(t *testing.T) {
+	tracer := NewTracer("demo", nil, time.Second, nil)
+	ctx, span := tracer.Start(context.Background(), "root", "server")
+	if !isHexID(span.traceID, 32) || !isHexID(span.spanID, 16) {
+		t.Fatalf("root ids = (%s, %s)", span.traceID, span.spanID)
+	}
+	if span.parentID != "" {
+		t.Fatalf("root parent = %q", span.parentID)
+	}
+	_, child := tracer.Start(ctx, "child", "")
+	if !isHexID(child.spanID, 16) || child.traceID != span.traceID || child.parentID != span.spanID {
+		t.Fatalf("child ids = (%s, %s, parent %s)", child.traceID, child.spanID, child.parentID)
+	}
+}
+
 func TestResumeRejectsInvalidIDs(t *testing.T) {
 	ctx := Resume(context.Background(), "not-a-trace", "bbbbbbbbbbbbbbbb", "01")
 	if _, _, ok := IDsFromContext(ctx); ok {

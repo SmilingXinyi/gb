@@ -184,6 +184,9 @@ func TestSetupRequiresValues(t *testing.T) {
 	if err := sseq.SetupAxiom("", "dataset", ""); err == nil {
 		t.Fatal("expected SetupAxiom error")
 	}
+	if err := sseq.SetupOTLP("", "service"); err == nil {
+		t.Fatal("expected SetupOTLP error")
+	}
 }
 
 func TestReservedClefAttributesAreNotOverwritten(t *testing.T) {
@@ -762,6 +765,190 @@ func TestSetupAxiomEndpoint(t *testing.T) {
 	}
 }
 
+func TestSetupOTLPExportsParentAndChildInOneRequest(t *testing.T) {
+	var bodies []string
+	var contentTypes []string
+	var authorizations []string
+	var mutex sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		mutex.Lock()
+		bodies = append(bodies, string(body))
+		contentTypes = append(contentTypes, request.Header.Get("Content-Type"))
+		authorizations = append(authorizations, request.Header.Get("Authorization"))
+		mutex.Unlock()
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte(`{"partialSuccess":{}}`))
+	}))
+	defer server.Close()
+
+	if err := sseq.SetupOTLP(server.URL, "demo",
+		sseq.WithHeaders(map[string]string{"Authorization": "Bearer secret"}),
+		sseq.WithResourceAttributes(map[string]any{
+			"service.name":           "other",
+			"deployment.environment": "prod",
+		}),
+		sseq.WithBatchSize(10),
+		sseq.WithFlushInterval(time.Hour),
+		sseq.WithErrorHandler(func(err error) {
+			t.Errorf("export: %v", err)
+		}),
+	); err != nil {
+		t.Fatalf("SetupOTLP() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+
+	parentCtx, endParent := sseq.Start(context.Background(), "checkout", "server")
+	sseq.Set(parentCtx, "http.route", "/checkout")
+	sseq.Event(parentCtx, "cart.loaded", "item.count", 2)
+	childErr := sseq.Trace(parentCtx, "charge", "client", func(context.Context) error {
+		return errors.New("card declined")
+	})
+	endParent()
+	if childErr == nil {
+		t.Fatal("expected child error")
+	}
+	if err := sseq.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("requests = %d, bodies = %q", len(bodies), bodies)
+	}
+	if contentTypes[0] != "application/json" {
+		t.Fatalf("Content-Type = %q", contentTypes[0])
+	}
+	if authorizations[0] != "Bearer secret" {
+		t.Fatalf("Authorization = %q", authorizations[0])
+	}
+
+	spans := decodeOTLPSpans(t, []byte(bodies[0]))
+	parent := otlpSpanByName(t, spans, "checkout")
+	child := otlpSpanByName(t, spans, "charge")
+	if _, exists := parent["parentSpanId"]; exists {
+		t.Fatalf("root parentSpanId = %v", parent["parentSpanId"])
+	}
+	if child["parentSpanId"] != parent["spanId"] {
+		t.Fatalf("child parent = %v, parent span = %v", child["parentSpanId"], parent["spanId"])
+	}
+	if parent["kind"] != float64(2) || child["kind"] != float64(3) {
+		t.Fatalf("kinds = (%v, %v)", parent["kind"], child["kind"])
+	}
+	status, _ := child["status"].(map[string]any)
+	if status["code"] != float64(2) || status["message"] != "card declined" {
+		t.Fatalf("child status = %#v", child["status"])
+	}
+	events, _ := child["events"].([]any)
+	foundException := false
+	for _, rawEvent := range events {
+		event, _ := rawEvent.(map[string]any)
+		if event["name"] == "exception" {
+			foundException = true
+		}
+	}
+	if !foundException {
+		t.Fatalf("child events = %#v", child["events"])
+	}
+	route := otlpAttribute(t, parent, "http.route")
+	if route["stringValue"] != "/checkout" {
+		t.Fatalf("http.route = %#v", route)
+	}
+	count := otlpEventAttribute(t, parent, "cart.loaded", "item.count")
+	if count["intValue"] != "2" {
+		t.Fatalf("item.count = %#v", count)
+	}
+
+	resourceAttributes := otlpResourceAttributes(t, []byte(bodies[0]))
+	if resourceAttributes["service.name"].(map[string]any)["stringValue"] != "demo" {
+		t.Fatalf("service.name = %#v", resourceAttributes["service.name"])
+	}
+	if resourceAttributes["deployment.environment"].(map[string]any)["stringValue"] != "prod" {
+		t.Fatalf("environment = %#v", resourceAttributes["deployment.environment"])
+	}
+}
+
+func TestSetupOTLPReportsExportFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusUnsupportedMediaType)
+		_, _ = response.Write([]byte("unsupported media type"))
+	}))
+	defer server.Close()
+
+	reported := make(chan error, 1)
+	if err := sseq.SetupOTLP(server.URL, "demo",
+		sseq.WithBatchSize(1),
+		sseq.WithWriteAttempts(1),
+		sseq.WithErrorHandler(func(err error) {
+			select {
+			case reported <- err:
+			default:
+			}
+		}),
+	); err != nil {
+		t.Fatalf("SetupOTLP() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+
+	if err := sseq.Trace(context.Background(), "fail", "server", func(context.Context) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+	if err := sseq.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	select {
+	case err := <-reported:
+		if !strings.Contains(err.Error(), "415") || !strings.Contains(err.Error(), "unsupported media type") {
+			t.Fatalf("export error = %v", err)
+		}
+	default:
+		t.Fatal("OnError was not called")
+	}
+}
+
+func TestSetupOTLPReportsPartialSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte(`{"partialSuccess":{"rejectedSpans":"1","errorMessage":"span rejected"}}`))
+	}))
+	defer server.Close()
+
+	reported := make(chan error, 1)
+	if err := sseq.SetupOTLP(server.URL, "demo",
+		sseq.WithBatchSize(1),
+		sseq.WithWriteAttempts(1),
+		sseq.WithErrorHandler(func(err error) {
+			select {
+			case reported <- err:
+			default:
+			}
+		}),
+	); err != nil {
+		t.Fatalf("SetupOTLP() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sseq.Shutdown() })
+
+	if err := sseq.Trace(context.Background(), "partial", "internal", func(context.Context) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("Trace() error = %v", err)
+	}
+	if err := sseq.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	select {
+	case err := <-reported:
+		if !strings.Contains(err.Error(), "rejectedSpans=1") || !strings.Contains(err.Error(), "span rejected") {
+			t.Fatalf("export error = %v", err)
+		}
+	default:
+		t.Fatal("OnError was not called")
+	}
+}
+
 func TestHTTPMiddlewareHidesHijackerWhenUnsupported(t *testing.T) {
 	handler := sseq.HTTP(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := response.(http.Hijacker); ok {
@@ -800,6 +987,100 @@ func spanNamed(records []map[string]any, name string) bool {
 		}
 	}
 	return false
+}
+
+func decodeOTLPSpans(t *testing.T, body []byte) []map[string]any {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatalf("decode otlp: %v body=%s", err, body)
+	}
+	resourceSpans, _ := document["resourceSpans"].([]any)
+	if len(resourceSpans) != 1 {
+		t.Fatalf("resourceSpans = %#v", document["resourceSpans"])
+	}
+	resourceSpan, _ := resourceSpans[0].(map[string]any)
+	scopeSpans, _ := resourceSpan["scopeSpans"].([]any)
+	if len(scopeSpans) != 1 {
+		t.Fatalf("scopeSpans = %#v", resourceSpan["scopeSpans"])
+	}
+	scopeSpan, _ := scopeSpans[0].(map[string]any)
+	scope, _ := scopeSpan["scope"].(map[string]any)
+	if scope["name"] != "sseq" {
+		t.Fatalf("scope = %#v", scope)
+	}
+	rawSpans, _ := scopeSpan["spans"].([]any)
+	spans := make([]map[string]any, 0, len(rawSpans))
+	for _, rawSpan := range rawSpans {
+		span, _ := rawSpan.(map[string]any)
+		spans = append(spans, span)
+	}
+	return spans
+}
+
+func otlpResourceAttributes(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatalf("decode otlp: %v", err)
+	}
+	resourceSpan := document["resourceSpans"].([]any)[0].(map[string]any)
+	resource := resourceSpan["resource"].(map[string]any)
+	return indexOTLPAttributes(t, resource["attributes"])
+}
+
+func otlpSpanByName(t *testing.T, spans []map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, span := range spans {
+		if span["name"] == name {
+			return span
+		}
+	}
+	t.Fatalf("missing span %q in %#v", name, spans)
+	return nil
+}
+
+func otlpAttribute(t *testing.T, span map[string]any, key string) map[string]any {
+	t.Helper()
+	attributes := indexOTLPAttributes(t, span["attributes"])
+	value, ok := attributes[key].(map[string]any)
+	if !ok {
+		t.Fatalf("attribute %q = %#v", key, attributes[key])
+	}
+	return value
+}
+
+func otlpEventAttribute(t *testing.T, span map[string]any, eventName, key string) map[string]any {
+	t.Helper()
+	events, _ := span["events"].([]any)
+	for _, rawEvent := range events {
+		event, _ := rawEvent.(map[string]any)
+		if event["name"] != eventName {
+			continue
+		}
+		attributes := indexOTLPAttributes(t, event["attributes"])
+		value, ok := attributes[key].(map[string]any)
+		if !ok {
+			t.Fatalf("event %q attribute %q = %#v", eventName, key, attributes[key])
+		}
+		return value
+	}
+	t.Fatalf("missing event %q in %#v", eventName, span["events"])
+	return nil
+}
+
+func indexOTLPAttributes(t *testing.T, raw any) map[string]any {
+	t.Helper()
+	items, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("attributes = %#v", raw)
+	}
+	indexed := make(map[string]any, len(items))
+	for _, item := range items {
+		attribute := item.(map[string]any)
+		indexed[attribute["key"].(string)] = attribute["value"]
+	}
+	return indexed
 }
 
 func readJSONLines(t *testing.T, filename string) []map[string]any {
