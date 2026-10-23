@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/SmilingXinyi/gb/config"
+	"github.com/SmilingXinyi/gb/config/v2"
 )
 
 type serverConfig struct {

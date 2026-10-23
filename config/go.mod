@@ -1,4 +1,4 @@
-module github.com/SmilingXinyi/gb/config
+module github.com/SmilingXinyi/gb/config/v2
 
 go 1.24.0
 

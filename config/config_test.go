@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/SmilingXinyi/gb/config"
+	"github.com/SmilingXinyi/gb/config/v2"
 )
 
 type serverConfig struct {
@@ -18,12 +18,12 @@ type serverConfig struct {
 }
 
 type appConfig struct {
-	Name    string         `yaml:"name"`
-	Debug   bool           `yaml:"debug"`
+	Name    string          `yaml:"name"`
+	Debug   bool            `yaml:"debug"`
 	Timeout config.Duration `yaml:"timeout"`
-	Server  serverConfig   `yaml:"server"`
-	Tags    []string       `yaml:"tags"`
-	Nested  *serverConfig  `yaml:"nested"`
+	Server  serverConfig    `yaml:"server"`
+	Tags    []string        `yaml:"tags"`
+	Nested  *serverConfig   `yaml:"nested"`
 }
 
 // TestLoad_BasicYAML loads a simple YAML file into a typed struct.
@@ -49,7 +49,7 @@ tags:
 	assert.Equal(t, []string{"a", "b"}, settings.Tags)
 }
 
-// TestLoad_EnvOverride applies _SECTION__FIELD overrides after YAML decode.
+// TestLoad_EnvOverride applies __SECTION__FIELD overrides after YAML decode.
 func TestLoad_EnvOverride(t *testing.T) {
 	path := writeFile(t, "config.yaml", `
 name: demo
@@ -57,9 +57,9 @@ server:
   host: 127.0.0.1
   port: 8080
 `)
-	t.Setenv("_NAME", "from-env")
-	t.Setenv("_SERVER__PORT", "9090")
-	t.Setenv("_SERVER__HOST", "0.0.0.0")
+	t.Setenv("__NAME", "from-env")
+	t.Setenv("__SERVER__PORT", "9090")
+	t.Setenv("__SERVER__HOST", "0.0.0.0")
 
 	var settings appConfig
 	require.NoError(t, config.Load(path, &settings))
@@ -73,7 +73,7 @@ func TestLoad_UnknownTopLevelEnvIsIgnored(t *testing.T) {
 	path := writeFile(t, "config.yaml", `
 name: demo
 `)
-	t.Setenv("_DOES_NOT_EXIST", "x")
+	t.Setenv("__DOES_NOT_EXIST", "x")
 	var settings appConfig
 	require.NoError(t, config.Load(path, &settings))
 	assert.Equal(t, "demo", settings.Name)
@@ -87,7 +87,7 @@ server:
   host: 127.0.0.1
   port: 8080
 `)
-	t.Setenv("_SERVER__MISSING", "1")
+	t.Setenv("__SERVER__MISSING", "1")
 	var settings appConfig
 	err := config.Load(path, &settings)
 	require.Error(t, err)
@@ -125,7 +125,7 @@ func TestLoad_WithDotEnv(t *testing.T) {
 	configPath := filepath.Join(directory, "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("name: demo\nserver:\n  host: h\n  port: 1\n"), 0o644))
 	dotenvPath := filepath.Join(directory, ".env")
-	require.NoError(t, os.WriteFile(dotenvPath, []byte("_NAME=from-dotenv\n_SERVER__PORT=7777\n"), 0o644))
+	require.NoError(t, os.WriteFile(dotenvPath, []byte("__NAME=from-dotenv\n__SERVER__PORT=7777\n"), 0o644))
 
 	clearOverrideEnv(t)
 
@@ -165,8 +165,8 @@ func TestLoad_NilDestinationErrors(t *testing.T) {
 func TestApplyEnv_AllocatesNilPointerNestedFields(t *testing.T) {
 	settings := &appConfig{}
 	err := config.ApplyEnv(settings, []string{
-		"_NESTED__HOST=allocated",
-		"_NESTED__PORT=1234",
+		"__NESTED__HOST=allocated",
+		"__NESTED__PORT=1234",
 	})
 	require.NoError(t, err)
 	require.NotNil(t, settings.Nested)
@@ -177,7 +177,7 @@ func TestApplyEnv_AllocatesNilPointerNestedFields(t *testing.T) {
 // TestApplyEnv_SliceViaYAMLLiteral decodes complex values through YAML unmarshal.
 func TestApplyEnv_SliceViaYAMLLiteral(t *testing.T) {
 	settings := &appConfig{Name: "demo"}
-	err := config.ApplyEnv(settings, []string{`_TAGS=["x","y"]`})
+	err := config.ApplyEnv(settings, []string{`__TAGS=["x","y"]`})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"x", "y"}, settings.Tags)
 }
@@ -186,8 +186,8 @@ func TestApplyEnv_SliceViaYAMLLiteral(t *testing.T) {
 func TestApplyEnv_BoolAndNumbers(t *testing.T) {
 	settings := &appConfig{}
 	err := config.ApplyEnv(settings, []string{
-		"_DEBUG=true",
-		"_SERVER__PORT=42",
+		"__DEBUG=true",
+		"__SERVER__PORT=42",
 	})
 	require.NoError(t, err)
 	assert.True(t, settings.Debug)
@@ -197,22 +197,25 @@ func TestApplyEnv_BoolAndNumbers(t *testing.T) {
 // TestApplyEnv_DurationUsesTextUnmarshaler parses duration overrides.
 func TestApplyEnv_DurationUsesTextUnmarshaler(t *testing.T) {
 	settings := &appConfig{}
-	err := config.ApplyEnv(settings, []string{"_TIMEOUT=1500ms"})
+	err := config.ApplyEnv(settings, []string{"__TIMEOUT=1500ms"})
 	require.NoError(t, err)
 	assert.Equal(t, 1500*time.Millisecond, settings.Timeout.Value())
 }
 
 // TestEnvironmentPathHelpers covers invalid override names via ApplyEnv no-ops.
 func TestEnvironmentPathHelpers(t *testing.T) {
-	settings := &appConfig{Name: "keep"}
+	settings := &appConfig{Name: "keep", Server: serverConfig{Port: 8080}}
 	err := config.ApplyEnv(settings, []string{
-		"NAME=ignored",     // missing leading underscore
-		"__NAME=ignored",   // leading double underscore
-		"_SER-VER=ignored", // invalid segment character; also no top-level match path
-		"NOEQUALS",         // malformed
+		"NAME=ignored",      // missing leading underscores
+		"_NAME=ignored",     // single leading underscore
+		"___NAME=ignored",   // triple leading underscore
+		"__SER-VER=ignored", // invalid segment character
+		"_SERVER__PORT=9",   // old single-underscore prefix
+		"NOEQUALS",          // malformed
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "keep", settings.Name)
+	assert.Equal(t, 8080, settings.Server.Port)
 }
 
 // writeFile creates a temporary file with the given contents and returns its path.
@@ -226,7 +229,7 @@ func writeFile(t *testing.T, name, contents string) string {
 // clearOverrideEnv removes process env keys used by dotenv/env override tests.
 func clearOverrideEnv(t *testing.T) {
 	t.Helper()
-	keys := []string{"_NAME", "_SERVER__PORT", "_SERVER__HOST", "_DEBUG", "_TIMEOUT", "_TAGS", "_NESTED__HOST", "_NESTED__PORT", "_SERVER__MISSING", "_DOES_NOT_EXIST"}
+	keys := []string{"__NAME", "__SERVER__PORT", "__SERVER__HOST", "__DEBUG", "__TIMEOUT", "__TAGS", "__NESTED__HOST", "__NESTED__PORT", "__SERVER__MISSING", "__DOES_NOT_EXIST", "_NAME", "_SERVER__PORT"}
 	for _, key := range keys {
 		require.NoError(t, os.Unsetenv(key))
 	}

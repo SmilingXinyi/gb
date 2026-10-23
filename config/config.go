@@ -51,7 +51,7 @@ func WithOptionalDotEnv(paths ...string) Option {
 }
 
 // Load decodes a YAML file, loads dotenv files, and applies special environment
-// overrides such as _SERVER__PORT to the YAML path server.port.
+// overrides such as __SERVER__PORT to the YAML path server.port.
 func Load(path string, destination any, optionValues ...Option) error {
 	if err := validateDestination(destination); err != nil {
 		return err
@@ -93,8 +93,9 @@ func Load(path string, destination any, optionValues ...Option) error {
 	return nil
 }
 
-// ApplyEnv applies entries with the _SECTION__FIELD naming convention.
-// A single segment such as _NAME addresses a top-level YAML field.
+// ApplyEnv applies entries with the __SECTION__FIELD naming convention.
+// A single segment such as __NAME addresses a top-level YAML field.
+// Names that start with a single underscore are ignored.
 func ApplyEnv(destination any, environment []string) error {
 	if err := validateDestination(destination); err != nil {
 		return err
@@ -141,12 +142,13 @@ func validateDestination(destination any) error {
 	return nil
 }
 
-// environmentPath converts _SERVER__PORT into ["server", "port"].
+// environmentPath converts __SERVER__PORT into ["server", "port"].
+// The name must start with exactly two underscores.
 func environmentPath(name string) ([]string, bool) {
-	if len(name) < 2 || name[0] != '_' || name[1] == '_' {
+	if len(name) < 3 || name[0] != '_' || name[1] != '_' || name[2] == '_' {
 		return nil, false
 	}
-	segments := strings.Split(name[1:], "__")
+	segments := strings.Split(name[2:], "__")
 	for index, segment := range segments {
 		if segment == "" || !validEnvironmentSegment(segment) {
 			return nil, false
